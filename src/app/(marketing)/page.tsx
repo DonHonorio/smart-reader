@@ -6,10 +6,10 @@ export default function MarketingHomePage() {
     <PlaceholderPage
       label="Marketing"
       title={APP_TITLE}
-      description={`${APP_TAGLINE} This is the initial landing placeholder for the MVP.`}
+      description={`${APP_TAGLINE} This public landing is the initial SaaS shell for Smart-Reader.`}
       links={[
         { href: ROUTES.login, label: "Login" },
-        { href: ROUTES.register, label: "Create account" },
+        { href: ROUTES.register, label: "Register" },
         { href: ROUTES.dashboard, label: "Go to dashboard" },
       ]}
     />

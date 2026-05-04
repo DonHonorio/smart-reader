@@ -6,7 +6,7 @@ export default function ExportPage() {
     <PlaceholderPage
       label="App"
       title="Export"
-      description="Placeholder page for Anki-friendly CSV export. Export generation will be implemented in the next steps."
+      description="Placeholder page for Anki-friendly CSV export with a simple and focused workflow."
       links={[
         { href: ROUTES.vocabulary, label: "Back to vocabulary" },
         { href: ROUTES.dashboard, label: "Back to dashboard" },

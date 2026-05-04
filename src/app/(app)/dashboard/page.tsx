@@ -6,7 +6,7 @@ export default function DashboardPage() {
     <PlaceholderPage
       label="App"
       title="Dashboard"
-      description="Placeholder dashboard for the private area. Use this as the central entry point for reader workflows."
+      description="Central workspace placeholder for reading workflows, vocabulary capture, and export flow."
       links={[
         { href: ROUTES.library, label: "Open library" },
         { href: ROUTES.reader("sample-book"), label: "Open sample reader" },

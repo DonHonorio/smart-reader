@@ -1,5 +1,7 @@
 import Link from "next/link";
-import { PageSection } from "@/components/layout/page-section";
+import type { ReactNode } from "react";
+import { buttonClassNames } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
 import { cn } from "@/lib/utils";
 import type { NavigationItem } from "@/types";
 
@@ -8,6 +10,7 @@ type PlaceholderPageProps = {
   title: string;
   description: string;
   links?: NavigationItem[];
+  children?: ReactNode;
 };
 
 export function PlaceholderPage({
@@ -15,31 +18,38 @@ export function PlaceholderPage({
   title,
   description,
   links = [],
+  children,
 }: PlaceholderPageProps) {
+  const hasActions = links.length > 0;
+
   return (
-    <div className="flex min-h-screen flex-1 bg-slate-50 px-6 py-12 text-slate-900 sm:px-10">
-      <PageSection>
-        <div className="space-y-6">
-          <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-600">
-            {label}
-          </span>
-          <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">{title}</h1>
-          <p className="max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
-            {description}
-          </p>
-          <div className={cn("flex flex-wrap gap-3", links.length === 0 && "hidden")}>
-            {links.map((link) => (
-              <Link
-                key={link.href}
-                href={link.href}
-                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-100"
-              >
-                {link.label}
-              </Link>
-            ))}
-          </div>
+    <div className="mx-auto w-full max-w-4xl space-y-6">
+      <div className="space-y-3">
+        <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-600">
+          {label}
+        </span>
+        <h1 className="text-3xl font-semibold tracking-tight text-slate-900 sm:text-4xl">{title}</h1>
+        <p className="max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">{description}</p>
+      </div>
+
+      <Card
+        title="Quick actions"
+        description="Use these links to navigate the current MVP scaffold."
+        className={cn(!hasActions && !children && "hidden")}
+      >
+        <div className={cn("flex flex-wrap gap-3", !hasActions && "hidden")}>
+          {links.map((link) => (
+            <Link
+              key={link.href}
+              href={link.href}
+              className={buttonClassNames({ variant: "secondary", size: "sm" })}
+            >
+              {link.label}
+            </Link>
+          ))}
         </div>
-      </PageSection>
+        {children && <div className={cn(hasActions && "mt-6")}>{children}</div>}
+      </Card>
     </div>
   );
 }
