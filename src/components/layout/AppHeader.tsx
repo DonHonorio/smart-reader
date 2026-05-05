@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Button } from "@/components/ui/Button";
+import { buttonClassNames } from "@/components/ui/Button";
 import { APP_TITLE, ROUTES } from "@/lib/constants";
 import {
   getAppSectionName,
@@ -22,9 +22,12 @@ export function AppHeader() {
           <Link href={ROUTES.home} className="text-lg font-semibold tracking-tight text-slate-900">
             {APP_TITLE}
           </Link>
-          <Button variant="secondary" size="sm">
+          <Link
+            href={ROUTES.library}
+            className={buttonClassNames({ variant: "secondary", size: "sm" })}
+          >
             Upload book
-          </Button>
+          </Link>
         </div>
 
         <div className="hidden items-center justify-between gap-3 md:flex">
@@ -34,7 +37,9 @@ export function AppHeader() {
             </p>
             <h1 className="text-xl font-semibold tracking-tight text-slate-900">{sectionName}</h1>
           </div>
-          <Button variant="secondary">Upload book</Button>
+          <Link href={ROUTES.library} className={buttonClassNames({ variant: "secondary" })}>
+            Upload book
+          </Link>
         </div>
       </header>
 

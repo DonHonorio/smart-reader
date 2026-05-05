@@ -1,32 +1,37 @@
-import { Button } from "@/components/ui/Button";
-import { Card } from "@/components/ui/Card";
-import { Input } from "@/components/ui/Input";
-import { PlaceholderPage } from "@/components/ui/placeholder-page";
-import { ROUTES } from "@/lib/constants";
+import { BookCard } from "@/components/books/BookCard";
+import { EmptyLibraryState } from "@/components/books/EmptyLibraryState";
+import { UploadBookButton } from "@/components/books/UploadBookButton";
+import { UploadBookForm } from "@/components/books/UploadBookForm";
+import { getUserBooks } from "@/lib/books";
 
-export default function LibraryPage() {
+export default async function LibraryPage() {
+  const books = await getUserBooks();
+  const hasBooks = books.length > 0;
+
   return (
-    <PlaceholderPage
-      label="App"
-      title="Library"
-      description="Placeholder page for uploaded books and reading progress. EPUB upload logic will be added later."
-      links={[
-        { href: ROUTES.reader("sample-book"), label: "Open sample reader" },
-        { href: ROUTES.dashboard, label: "Back to dashboard" },
-      ]}
-    >
-      <Card
-        title="Search library"
-        description="Use this placeholder to preview the future filtering flow."
-        className="bg-slate-50"
-      >
-        <div className="flex flex-col gap-3 sm:flex-row">
-          <Input aria-label="Search books" placeholder="Search by title or author" />
-          <Button variant="secondary" className="sm:min-w-28">
-            Search
-          </Button>
+    <section className="mx-auto w-full max-w-6xl space-y-6">
+      <header className="space-y-2">
+        <h1 className="text-3xl font-semibold tracking-tight text-slate-900 sm:text-4xl">Library</h1>
+        <p className="max-w-2xl text-base leading-7 text-slate-600">
+          Your uploaded books and reading sessions in one place.
+        </p>
+      </header>
+
+      <div id="upload-book-panel">
+        <UploadBookButton initiallyOpen={!hasBooks}>
+          <UploadBookForm />
+        </UploadBookButton>
+      </div>
+
+      {!hasBooks ? (
+        <EmptyLibraryState uploadHref="#upload-book-panel" />
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {books.map((book) => (
+            <BookCard key={book.id} book={book} />
+          ))}
         </div>
-      </Card>
-    </PlaceholderPage>
+      )}
+    </section>
   );
 }
