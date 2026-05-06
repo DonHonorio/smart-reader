@@ -21,3 +21,8 @@ export type Book = {
   created_at: string;
   updated_at: string;
 };
+
+export type EpubReaderProps = {
+  fileUrl: string;
+  bookId: string;
+};

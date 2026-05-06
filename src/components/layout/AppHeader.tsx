@@ -14,32 +14,63 @@ import { cn } from "@/lib/utils";
 export function AppHeader() {
   const pathname = usePathname() ?? "";
   const sectionName = getAppSectionName(pathname);
+  const isReaderRoute = pathname.startsWith("/reader/");
 
   return (
     <>
-      <header className="border-b border-slate-200 bg-white px-4 py-4 md:px-8">
+      <header
+        className={cn(
+          "border-b border-slate-200 bg-white",
+          isReaderRoute ? "px-3 py-2 md:px-6 md:py-2.5" : "px-4 py-4 md:px-8",
+        )}
+      >
         <div className="flex items-center justify-between gap-3 md:hidden">
-          <Link href={ROUTES.home} className="text-lg font-semibold tracking-tight text-slate-900">
-            {APP_TITLE}
-          </Link>
-          <Link
-            href={ROUTES.library}
-            className={buttonClassNames({ variant: "secondary", size: "sm" })}
-          >
-            Upload book
-          </Link>
+          {isReaderRoute ? (
+            <>
+              <Link
+                href={ROUTES.library}
+                className={buttonClassNames({ variant: "ghost", size: "sm" })}
+              >
+                Library
+              </Link>
+              <p className="truncate text-sm font-semibold tracking-tight text-slate-900">Reader</p>
+            </>
+          ) : (
+            <>
+              <Link href={ROUTES.home} className="text-lg font-semibold tracking-tight text-slate-900">
+                {APP_TITLE}
+              </Link>
+              <Link
+                href={ROUTES.library}
+                className={buttonClassNames({ variant: "secondary", size: "sm" })}
+              >
+                Upload book
+              </Link>
+            </>
+          )}
         </div>
 
         <div className="hidden items-center justify-between gap-3 md:flex">
-          <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Private workspace
-            </p>
-            <h1 className="text-xl font-semibold tracking-tight text-slate-900">{sectionName}</h1>
-          </div>
-          <Link href={ROUTES.library} className={buttonClassNames({ variant: "secondary" })}>
-            Upload book
-          </Link>
+          {isReaderRoute ? (
+            <>
+              <h1 className="text-sm font-semibold uppercase tracking-wide text-slate-600">Reader mode</h1>
+              <Link href={ROUTES.library} className={buttonClassNames({ variant: "secondary", size: "sm" })}>
+                Back to library
+              </Link>
+            </>
+          ) : (
+            <>
+              <div className="min-w-0">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Private workspace
+                </p>
+                <h1 className="text-xl font-semibold tracking-tight text-slate-900">{sectionName}</h1>
+              </div>
+              <Link href={ROUTES.library} className={buttonClassNames({ variant: "secondary" })}>
+                Upload book
+              </Link>
+            </>
+          )}
         </div>
       </header>
 

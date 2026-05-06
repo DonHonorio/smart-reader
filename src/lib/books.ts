@@ -44,3 +44,44 @@ export async function getUserBooks(): Promise<Book[]> {
 
   return data as Book[];
 }
+
+export async function getUserBookById(bookId: string): Promise<Book | null> {
+  noStore();
+
+  if (!bookId) {
+    return null;
+  }
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError) {
+    console.error("getUserBookById auth error:", authError.message);
+    return null;
+  }
+
+  if (!user) {
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("books")
+    .select(BOOK_FIELDS)
+    .eq("id", bookId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (error) {
+    console.error("getUserBookById query error:", error.message);
+    return null;
+  }
+
+  if (!data) {
+    return null;
+  }
+
+  return data as Book;
+}
