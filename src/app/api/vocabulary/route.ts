@@ -98,7 +98,6 @@ function buildFallbackVocabularyItem(
     confidence: useLegacyShape ? null : insertPayload.confidence,
     status: insertPayload.status,
     created_at: now,
-    updated_at: now,
   };
 }
 

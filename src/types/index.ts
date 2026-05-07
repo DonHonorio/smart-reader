@@ -76,7 +76,6 @@ export type VocabularyItem = {
   confidence: string | null;
   status: string;
   created_at: string;
-  updated_at: string;
 };
 
 export type SaveVocabularyRequest = {
