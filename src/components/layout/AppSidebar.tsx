@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Button } from "@/components/ui/Button";
+import { buttonClassNames } from "@/components/ui/Button";
 import { APP_TITLE, ROUTES } from "@/lib/constants";
 import { PRIVATE_NAVIGATION } from "@/lib/navigation";
 
@@ -21,11 +21,14 @@ export function AppSidebar() {
         ))}
       </nav>
 
-      <form action="/logout" method="post" className="mt-8 border-t border-slate-200 pt-6">
-        <Button type="submit" variant="ghost" className="w-full justify-start">
-          Logout
-        </Button>
-      </form>
+      <div className="mt-8 border-t border-slate-200 pt-6">
+        <Link
+          href={ROUTES.library}
+          className={buttonClassNames({ variant: "secondary", size: "sm", className: "w-full" })}
+        >
+          Upload book
+        </Link>
+      </div>
     </aside>
   );
 }

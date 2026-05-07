@@ -40,12 +40,14 @@ export function AppHeader() {
               <Link href={ROUTES.home} className="text-lg font-semibold tracking-tight text-slate-900">
                 {APP_TITLE}
               </Link>
-              <Link
-                href={ROUTES.library}
-                className={buttonClassNames({ variant: "secondary", size: "sm" })}
-              >
-                Upload book
-              </Link>
+              <form action="/logout" method="post">
+                <button
+                  type="submit"
+                  className={buttonClassNames({ variant: "secondary", size: "sm" })}
+                >
+                  Logout
+                </button>
+              </form>
             </>
           )}
         </div>
@@ -66,9 +68,11 @@ export function AppHeader() {
                 </p>
                 <h1 className="text-xl font-semibold tracking-tight text-slate-900">{sectionName}</h1>
               </div>
-              <Link href={ROUTES.library} className={buttonClassNames({ variant: "secondary" })}>
-                Upload book
-              </Link>
+              <form action="/logout" method="post">
+                <button type="submit" className={buttonClassNames({ variant: "secondary" })}>
+                  Logout
+                </button>
+              </form>
             </>
           )}
         </div>
