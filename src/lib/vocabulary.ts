@@ -2,10 +2,12 @@ import { unstable_noStore as noStore } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import type { VocabularyItem } from "@/types";
 
-const VOCABULARY_FIELDS =
+export const VOCABULARY_FIELDS =
   "id, user_id, book_id, selected_text, term, canonical_unit, translation, context_sentence, unit_type, confidence, status, created_at";
 
-export async function getUserVocabularyItems(): Promise<VocabularyItem[]> {
+async function getUserVocabularyItemsByCreatedAtOrder(
+  ascending: boolean,
+): Promise<VocabularyItem[]> {
   noStore();
 
   const supabase = await createClient();
@@ -27,7 +29,7 @@ export async function getUserVocabularyItems(): Promise<VocabularyItem[]> {
     .from("vocabulary_items")
     .select(VOCABULARY_FIELDS)
     .eq("user_id", user.id)
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending });
 
   if (error) {
     console.error("getUserVocabularyItems query error:", error.message);
@@ -35,4 +37,12 @@ export async function getUserVocabularyItems(): Promise<VocabularyItem[]> {
   }
 
   return (data ?? []) as VocabularyItem[];
+}
+
+export async function getUserVocabularyItems(): Promise<VocabularyItem[]> {
+  return getUserVocabularyItemsByCreatedAtOrder(false);
+}
+
+export async function getUserVocabularyItemsForExport(): Promise<VocabularyItem[]> {
+  return getUserVocabularyItemsByCreatedAtOrder(true);
 }
