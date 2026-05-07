@@ -25,4 +25,28 @@ export type Book = {
 export type EpubReaderProps = {
   fileUrl: string;
   bookId: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+};
+
+export type TranslateRequestBody = {
+  selectedText: string;
+  contextSentence: string | null;
+  sourceLanguage: string;
+  targetLanguage: string;
+};
+
+export type TranslationUnitType =
+  | "single_word"
+  | "phrasal_verb"
+  | "idiom"
+  | "collocation"
+  | "phrase";
+
+export type TranslateResponse = {
+  selectedText: string;
+  translationUnit: string;
+  translation: string;
+  isExpanded: boolean;
+  unitType: TranslationUnitType;
 };

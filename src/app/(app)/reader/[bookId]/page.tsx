@@ -103,7 +103,12 @@ export default async function ReaderBookPage({ params }: ReaderBookPageProps) {
       </div>
 
       <div className="flex-1 min-h-0 overflow-hidden">
-        <EpubReader fileUrl={signedData.signedUrl} bookId={book.id} />
+        <EpubReader
+          fileUrl={signedData.signedUrl}
+          bookId={book.id}
+          sourceLanguage={book.language_from}
+          targetLanguage={book.language_to}
+        />
       </div>
     </section>
   );

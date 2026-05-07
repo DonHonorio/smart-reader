@@ -4,51 +4,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ePub, { type Book as EpubBook, type Contents as EpubContents, type Rendition } from "epubjs";
 import { Button } from "@/components/ui/Button";
 import { SelectionPanel } from "@/components/reader/SelectionPanel";
+import { extractContextSentenceFromSelection } from "@/lib/text";
 import type { EpubReaderProps } from "@/types";
 
-function normalizeSelectionText(value: string) {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function extractContextSentenceFromRange(range: Range, selectedText: string): string | null {
-  const baseText = normalizeSelectionText(
-    range.commonAncestorContainer.nodeType === Node.TEXT_NODE
-      ? range.commonAncestorContainer.parentElement?.textContent ??
-          range.commonAncestorContainer.textContent ??
-          ""
-      : range.commonAncestorContainer.textContent ?? "",
-  );
-
-  if (!baseText) {
-    return null;
-  }
-
-  const selectedIndex = baseText.toLowerCase().indexOf(selectedText.toLowerCase());
-
-  if (selectedIndex < 0) {
-    return null;
-  }
-
-  const leftSide = baseText.slice(0, selectedIndex);
-  const startBoundary = Math.max(
-    leftSide.lastIndexOf("."),
-    leftSide.lastIndexOf("?"),
-    leftSide.lastIndexOf("!"),
-  );
-  const sentenceStart = startBoundary >= 0 ? startBoundary + 1 : 0;
-
-  const rightSide = baseText.slice(selectedIndex + selectedText.length);
-  const punctuationOffset = rightSide.search(/[.!?]/);
-  const sentenceEnd =
-    punctuationOffset >= 0
-      ? selectedIndex + selectedText.length + punctuationOffset + 1
-      : baseText.length;
-
-  const sentence = normalizeSelectionText(baseText.slice(sentenceStart, sentenceEnd));
-  return sentence || null;
-}
-
-export function EpubReader({ fileUrl, bookId }: EpubReaderProps) {
+export function EpubReader({
+  fileUrl,
+  bookId,
+  sourceLanguage,
+  targetLanguage,
+}: EpubReaderProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const bookRef = useRef<EpubBook | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
@@ -118,18 +82,23 @@ export function EpubReader({ fileUrl, bookId }: EpubReaderProps) {
         bookRef.current = book;
         renditionRef.current = rendition;
 
-        selectionHandler = (cfiRange: string, contents: EpubContents) => {
+        selectionHandler = (_cfiRange: string, contents: EpubContents) => {
           try {
-            const range = contents.range(cfiRange);
-            const text = normalizeSelectionText(range.toString());
+            const selection = contents.window.getSelection();
 
-            if (!text) {
+            if (!selection || selection.rangeCount === 0) {
+              return;
+            }
+
+            const extractedContext = extractContextSentenceFromSelection(selection);
+
+            if (!extractedContext.selectedText) {
               return;
             }
 
             selectedContentsRef.current = contents;
-            setSelectedText(text);
-            setContextSentence(extractContextSentenceFromRange(range, text));
+            setSelectedText(extractedContext.selectedText);
+            setContextSentence(extractedContext.contextSentence);
           } catch {
             // Ignore selection extraction errors and keep reader responsive.
           }
@@ -284,6 +253,8 @@ export function EpubReader({ fileUrl, bookId }: EpubReaderProps) {
               <SelectionPanel
                 selectedText={selectedText}
                 contextSentence={contextSentence}
+                sourceLanguage={sourceLanguage}
+                targetLanguage={targetLanguage}
                 onClear={clearSelection}
               />
             </div>
@@ -292,6 +263,8 @@ export function EpubReader({ fileUrl, bookId }: EpubReaderProps) {
               <SelectionPanel
                 selectedText={selectedText}
                 contextSentence={contextSentence}
+                sourceLanguage={sourceLanguage}
+                targetLanguage={targetLanguage}
                 onClear={clearSelection}
               />
             </div>
