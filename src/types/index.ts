@@ -43,10 +43,53 @@ export type TranslationUnitType =
   | "collocation"
   | "phrase";
 
-export type TranslateResponse = {
+export type LegacyTranslateResponse = {
   selectedText: string;
   translationUnit: string;
   translation: string;
   isExpanded: boolean;
   unitType: TranslationUnitType;
+};
+
+export type SemanticTranslateResponse = {
+  selectedText: string;
+  surfaceUnit: string;
+  canonicalUnit: string;
+  translation: string;
+  isExpanded: boolean;
+  unitType: TranslationUnitType;
+  confidence: string;
+};
+
+export type TranslateResponse = LegacyTranslateResponse | SemanticTranslateResponse;
+
+export type VocabularyItem = {
+  id: string;
+  user_id: string;
+  book_id: string;
+  selected_text: string;
+  term: string;
+  canonical_unit: string | null;
+  translation: string;
+  context_sentence: string;
+  unit_type: string | null;
+  confidence: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SaveVocabularyRequest = {
+  bookId: string;
+  selectedText: string;
+  term: string;
+  canonicalUnit: string;
+  translation: string;
+  contextSentence: string;
+  unitType: string;
+  confidence: string;
+};
+
+export type SaveVocabularyResponse = {
+  item: VocabularyItem;
 };

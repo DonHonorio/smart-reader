@@ -2,9 +2,10 @@
 
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/Button";
-import type { TranslateResponse } from "@/types";
+import type { SaveVocabularyRequest, SaveVocabularyResponse } from "@/types";
 
 type SelectionPanelProps = {
+  bookId: string;
   selectedText: string;
   contextSentence: string | null;
   sourceLanguage: string;
@@ -12,7 +13,61 @@ type SelectionPanelProps = {
   onClear: () => void;
 };
 
+type NormalizedTranslation = {
+  selectedText: string;
+  surfaceUnit: string;
+  canonicalUnit: string;
+  translation: string;
+  isExpanded: boolean;
+  unitType: string;
+  confidence: string;
+};
+
+function normalizeText(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function getNormalizedString(value: unknown) {
+  return typeof value === "string" ? normalizeText(value) : "";
+}
+
+function normalizeTranslatePayload(payload: Record<string, unknown>): NormalizedTranslation | null {
+  const normalizedSelectedText = getNormalizedString(payload.selectedText);
+  const normalizedTranslation = getNormalizedString(payload.translation);
+  const normalizedLegacyUnit = getNormalizedString(payload.translationUnit);
+  const normalizedSurfaceUnit =
+    getNormalizedString(payload.surfaceUnit) || normalizedLegacyUnit || normalizedSelectedText;
+  const normalizedCanonicalUnit =
+    getNormalizedString(payload.canonicalUnit) || normalizedSurfaceUnit;
+  const normalizedUnitType = getNormalizedString(payload.unitType) || "phrase";
+  const normalizedConfidence = getNormalizedString(payload.confidence) || "medium";
+  const isExpandedFromPayload =
+    typeof payload.isExpanded === "boolean"
+      ? payload.isExpanded
+      : normalizedSurfaceUnit.toLowerCase() !== normalizedSelectedText.toLowerCase();
+
+  if (
+    !normalizedSelectedText ||
+    !normalizedSurfaceUnit ||
+    !normalizedCanonicalUnit ||
+    !normalizedTranslation
+  ) {
+    return null;
+  }
+
+  return {
+    selectedText: normalizedSelectedText,
+    surfaceUnit: normalizedSurfaceUnit,
+    canonicalUnit: normalizedCanonicalUnit,
+    translation: normalizedTranslation,
+    isExpanded: isExpandedFromPayload,
+    unitType: normalizedUnitType,
+    confidence: normalizedConfidence,
+  };
+}
+
 export function SelectionPanel({
+  bookId,
   selectedText,
   contextSentence,
   sourceLanguage,
@@ -20,12 +75,18 @@ export function SelectionPanel({
   onClear,
 }: SelectionPanelProps) {
   const [isTranslating, setIsTranslating] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [translationState, setTranslationState] = useState<{
     key: string;
-    value: TranslateResponse;
+    value: NormalizedTranslation;
   } | null>(null);
   const [errorState, setErrorState] = useState<{
     key: string;
+    message: string;
+  } | null>(null);
+  const [saveState, setSaveState] = useState<{
+    key: string;
+    status: "saved" | "error";
     message: string;
   } | null>(null);
 
@@ -36,6 +97,10 @@ export function SelectionPanel({
 
   const translation = translationState?.key === selectionKey ? translationState.value : null;
   const errorMessage = errorState?.key === selectionKey ? errorState.message : null;
+  const currentSaveState = saveState?.key === selectionKey ? saveState : null;
+  const isSaved = currentSaveState?.status === "saved";
+  const saveErrorMessage = currentSaveState?.status === "error" ? currentSaveState.message : null;
+  const saveSuccessMessage = currentSaveState?.status === "saved" ? currentSaveState.message : null;
 
   async function handleTranslate() {
     if (!selectedText || isTranslating) {
@@ -59,38 +124,25 @@ export function SelectionPanel({
         }),
       });
 
-      const data = (await response.json()) as Partial<TranslateResponse> & {
+      const data = (await response.json()) as Record<string, unknown> & {
         error?: string;
       };
 
-      if (
-        !response.ok ||
-        typeof data.selectedText !== "string" ||
-        typeof data.translationUnit !== "string" ||
-        typeof data.translation !== "string" ||
-        typeof data.isExpanded !== "boolean" ||
-        typeof data.unitType !== "string"
-      ) {
+      if (!response.ok) {
         throw new Error(data.error || "Translation request failed.");
       }
 
-      const normalizedTranslationUnit = data.translationUnit.trim();
-      const normalizedTranslation = data.translation.trim();
+      const normalizedTranslation = normalizeTranslatePayload(data);
 
-      if (!normalizedTranslationUnit || !normalizedTranslation) {
+      if (!normalizedTranslation) {
         throw new Error("Empty translation response.");
       }
 
       setTranslationState({
         key: selectionKey,
-        value: {
-          selectedText: data.selectedText,
-          translationUnit: normalizedTranslationUnit,
-          translation: normalizedTranslation,
-          isExpanded: data.isExpanded,
-          unitType: data.unitType,
-        },
+        value: normalizedTranslation,
       });
+      setSaveState(null);
     } catch {
       setErrorState({ key: selectionKey, message: "Could not translate right now." });
     } finally {
@@ -98,9 +150,76 @@ export function SelectionPanel({
     }
   }
 
+  async function handleSave() {
+    if (!translation || isSaving || isSaved) {
+      return;
+    }
+
+    const normalizedContextSentence = getNormalizedString(contextSentence);
+
+    if (!normalizedContextSentence) {
+      setSaveState({
+        key: selectionKey,
+        status: "error",
+        message: "Context is required before saving.",
+      });
+      return;
+    }
+
+    setIsSaving(true);
+    setSaveState(null);
+
+    try {
+      const body: SaveVocabularyRequest = {
+        bookId,
+        selectedText: translation.selectedText,
+        term: translation.surfaceUnit,
+        canonicalUnit: translation.canonicalUnit,
+        translation: translation.translation,
+        contextSentence: normalizedContextSentence,
+        unitType: translation.unitType,
+        confidence: translation.confidence,
+      };
+
+      const response = await fetch("/api/vocabulary", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+
+      const data = (await response.json()) as Partial<SaveVocabularyResponse> & {
+        error?: string;
+      };
+
+      if (!response.ok || typeof data.item !== "object" || data.item === null) {
+        throw new Error(data.error || "Save request failed.");
+      }
+
+      setSaveState({
+        key: selectionKey,
+        status: "saved",
+        message: "Saved",
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message ? error.message : "Could not save right now.";
+
+      setSaveState({
+        key: selectionKey,
+        status: "error",
+        message,
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   function handleClear() {
     setTranslationState(null);
     setErrorState(null);
+    setSaveState(null);
     onClear();
   }
 
@@ -128,13 +247,13 @@ export function SelectionPanel({
             Translated expression
           </p>
           <p className="max-h-16 overflow-auto rounded-md bg-slate-50 px-2 py-1.5 text-sm text-slate-800">
-            {translation.translationUnit}
+            {translation.surfaceUnit}
           </p>
 
           {translation.isExpanded && (
             <p className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
-              Expression detected: translated &quot;{translation.translationUnit}&quot;, not just &quot;
-              {selectedText}
+              Expression detected: translated &quot;{translation.surfaceUnit}&quot;, not just &quot;
+              {translation.selectedText}
               &quot;.
             </p>
           )}
@@ -157,17 +276,34 @@ export function SelectionPanel({
           variant="secondary"
           size="sm"
           onClick={handleTranslate}
-          disabled={!selectedText || isTranslating}
+          disabled={!selectedText || isTranslating || isSaving}
         >
           {isTranslating ? "Translating..." : "Translate"}
         </Button>
-        <Button variant="secondary" size="sm" disabled>
-          Save
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={handleSave}
+          disabled={!translation || isSaving || isSaved}
+        >
+          {isSaved ? "Saved" : isSaving ? "Saving..." : "Save"}
         </Button>
         <Button variant="ghost" size="sm" onClick={handleClear}>
           Clear
         </Button>
       </div>
+
+      {saveSuccessMessage && (
+        <p className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-700">
+          {saveSuccessMessage}
+        </p>
+      )}
+
+      {saveErrorMessage && (
+        <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700">
+          {saveErrorMessage}
+        </p>
+      )}
     </section>
   );
 }

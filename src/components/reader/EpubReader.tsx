@@ -251,6 +251,7 @@ export function EpubReader({
           <>
             <div className="absolute bottom-3 right-3 z-30 hidden w-full max-w-md md:block">
               <SelectionPanel
+                bookId={bookId}
                 selectedText={selectedText}
                 contextSentence={contextSentence}
                 sourceLanguage={sourceLanguage}
@@ -261,6 +262,7 @@ export function EpubReader({
 
             <div className="fixed inset-x-3 bottom-20 z-50 md:hidden">
               <SelectionPanel
+                bookId={bookId}
                 selectedText={selectedText}
                 contextSentence={contextSentence}
                 sourceLanguage={sourceLanguage}
