@@ -5,18 +5,90 @@ import ePub, { type Book as EpubBook, type Contents as EpubContents, type Rendit
 import { Button } from "@/components/ui/Button";
 import { SelectionPanel } from "@/components/reader/SelectionPanel";
 import { extractContextSentenceFromSelection } from "@/lib/text";
-import type { EpubReaderProps } from "@/types";
+import type { EpubReaderProps, UpsertReadingProgressRequest } from "@/types";
+
+const SAVE_PROGRESS_DEBOUNCE_MS = 800;
+
+type RelocatedPayload = {
+  percentage?: unknown;
+  start?: {
+    cfi?: unknown;
+    percentage?: unknown;
+    displayed?: {
+      page?: unknown;
+      total?: unknown;
+    };
+  };
+};
+
+function normalizeProgressPercentage(value: unknown): number | null {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return null;
+  }
+
+  const percentage = value <= 1 ? value * 100 : value;
+
+  if (percentage < 0) {
+    return 0;
+  }
+
+  if (percentage > 100) {
+    return 100;
+  }
+
+  return Math.round(percentage * 100) / 100;
+}
+
+function getProgressFromRelocatedPayload(payload: RelocatedPayload): number {
+  const startPercentage = normalizeProgressPercentage(payload.start?.percentage);
+
+  if (startPercentage !== null) {
+    return startPercentage;
+  }
+
+  const payloadPercentage = normalizeProgressPercentage(payload.percentage);
+
+  if (payloadPercentage !== null) {
+    return payloadPercentage;
+  }
+
+  const page = payload.start?.displayed?.page;
+  const total = payload.start?.displayed?.total;
+
+  if (typeof page === "number" && typeof total === "number" && total > 0) {
+    const displayedPercentage = normalizeProgressPercentage((page / total) * 100);
+
+    if (displayedPercentage !== null) {
+      return displayedPercentage;
+    }
+  }
+
+  return 0;
+}
+
+function getRelocatedCfi(payload: RelocatedPayload): string | null {
+  if (typeof payload.start?.cfi !== "string") {
+    return null;
+  }
+
+  const normalized = payload.start.cfi.trim();
+  return normalized || null;
+}
 
 export function EpubReader({
   fileUrl,
   bookId,
   sourceLanguage,
   targetLanguage,
+  initialLocation,
 }: EpubReaderProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const bookRef = useRef<EpubBook | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
   const selectedContentsRef = useRef<EpubContents | null>(null);
+  const saveProgressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSavedLocationRef = useRef<string | null>(null);
+  const lastSavedProgressRef = useRef<number>(0);
   const isRenditionReadyRef = useRef(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isReady, setIsReady] = useState(false);
@@ -37,6 +109,7 @@ export function EpubReader({
     let resizeObserver: ResizeObserver | null = null;
     let resizeRendition: (() => void) | null = null;
     let selectionHandler: ((cfiRange: string, contents: EpubContents) => void) | null = null;
+    let relocatedHandler: ((location: unknown) => void) | null = null;
     const container = containerRef.current;
 
     if (!container) {
@@ -48,6 +121,12 @@ export function EpubReader({
     renderContainer.innerHTML = "";
     isRenditionReadyRef.current = false;
     selectedContentsRef.current = null;
+    if (saveProgressTimerRef.current) {
+      clearTimeout(saveProgressTimerRef.current);
+      saveProgressTimerRef.current = null;
+    }
+    lastSavedLocationRef.current = initialLocation ?? null;
+    lastSavedProgressRef.current = 0;
     setIsLoading(true);
     setIsReady(false);
     setErrorMessage(null);
@@ -104,7 +183,61 @@ export function EpubReader({
           }
         };
 
+        relocatedHandler = (location: unknown) => {
+          const relocatedPayload = location as RelocatedPayload;
+          const cfi = getRelocatedCfi(relocatedPayload);
+
+          if (!cfi || isCancelled) {
+            return;
+          }
+
+          const progressPercentage = getProgressFromRelocatedPayload(relocatedPayload);
+          const isSameLocation = lastSavedLocationRef.current === cfi;
+          const progressDelta = Math.abs(lastSavedProgressRef.current - progressPercentage);
+
+          if (isSameLocation && progressDelta < 0.1) {
+            return;
+          }
+
+          if (saveProgressTimerRef.current) {
+            clearTimeout(saveProgressTimerRef.current);
+          }
+
+          saveProgressTimerRef.current = setTimeout(async () => {
+            if (isCancelled) {
+              return;
+            }
+
+            try {
+              const body: UpsertReadingProgressRequest = {
+                bookId,
+                currentLocation: cfi,
+                progressPercentage,
+              };
+
+              const response = await fetch("/api/reading-progress", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify(body),
+                signal: abortController.signal,
+              });
+
+              if (!response.ok) {
+                return;
+              }
+
+              lastSavedLocationRef.current = cfi;
+              lastSavedProgressRef.current = progressPercentage;
+            } catch {
+              // Ignore autosave issues to avoid interrupting reading.
+            }
+          }, SAVE_PROGRESS_DEBOUNCE_MS);
+        };
+
         rendition.on("selected", selectionHandler);
+        rendition.on("relocated", relocatedHandler);
 
         const handleResize = () => {
           if (!isRenditionReadyRef.current) {
@@ -131,7 +264,16 @@ export function EpubReader({
 
         resizeRendition = handleResize;
 
-        await rendition.display();
+        if (initialLocation) {
+          try {
+            await rendition.display(initialLocation);
+          } catch {
+            await rendition.display();
+          }
+        } else {
+          await rendition.display();
+        }
+
         isRenditionReadyRef.current = true;
 
         window.addEventListener("resize", handleResize);
@@ -180,8 +322,15 @@ export function EpubReader({
         window.removeEventListener("resize", resizeRendition);
       }
       resizeObserver?.disconnect();
+      if (saveProgressTimerRef.current) {
+        clearTimeout(saveProgressTimerRef.current);
+        saveProgressTimerRef.current = null;
+      }
       if (selectionHandler && renditionRef.current) {
         renditionRef.current.off("selected", selectionHandler);
+      }
+      if (relocatedHandler && renditionRef.current) {
+        renditionRef.current.off("relocated", relocatedHandler);
       }
       renditionRef.current?.destroy();
       renditionRef.current = null;
@@ -189,7 +338,7 @@ export function EpubReader({
       bookRef.current = null;
       renderContainer.innerHTML = "";
     };
-  }, [fileUrl, bookId]);
+  }, [fileUrl, bookId, initialLocation]);
 
   const goToPreviousPage = useCallback(async () => {
     if (!renditionRef.current) {

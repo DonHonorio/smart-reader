@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Card } from "@/components/ui/Card";
 import { buttonClassNames } from "@/components/ui/Button";
 import { EpubReader } from "@/components/reader/EpubReader";
-import { getUserBookById } from "@/lib/books";
+import { getUserBookById, getUserReadingProgressByBookId } from "@/lib/books";
 import { ROUTES } from "@/lib/constants";
 import { createClient } from "@/lib/supabase/server";
 
@@ -31,6 +31,8 @@ export default async function ReaderBookPage({ params }: ReaderBookPageProps) {
       </section>
     );
   }
+
+  const readingProgress = await getUserReadingProgressByBookId(book.id);
 
   const author = book.author?.trim() ? book.author : "Unknown author";
 
@@ -108,6 +110,7 @@ export default async function ReaderBookPage({ params }: ReaderBookPageProps) {
           bookId={book.id}
           sourceLanguage={book.language_from}
           targetLanguage={book.language_to}
+          initialLocation={readingProgress.currentLocation}
         />
       </div>
     </section>

@@ -27,6 +27,26 @@ export type EpubReaderProps = {
   bookId: string;
   sourceLanguage: string;
   targetLanguage: string;
+  initialLocation?: string | null;
+};
+
+export type ReadingProgress = {
+  user_id: string;
+  book_id: string;
+  current_location: string | null;
+  progress_percentage: number;
+  updated_at: string;
+};
+
+export type ReadingProgressResponse = {
+  currentLocation: string | null;
+  progressPercentage: number;
+};
+
+export type UpsertReadingProgressRequest = {
+  bookId: string;
+  currentLocation: string;
+  progressPercentage: number;
 };
 
 export type TranslateRequestBody = {
