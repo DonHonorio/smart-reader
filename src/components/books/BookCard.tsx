@@ -29,8 +29,6 @@ export function BookCard({ book }: BookCardProps) {
   return (
     <Card
       className="h-full"
-      title={book.title}
-      description={author}
       footer={
         <Link
           href={ROUTES.reader(book.id)}
@@ -40,7 +38,14 @@ export function BookCard({ book }: BookCardProps) {
         </Link>
       }
     >
-      <dl className="space-y-3 text-sm text-slate-600">
+      <div className="space-y-1">
+        <h2 className="line-clamp-2 max-w-full break-words text-xl font-semibold tracking-tight text-slate-900">
+          {book.title}
+        </h2>
+        <p className="truncate text-sm leading-6 text-slate-600">{author}</p>
+      </div>
+
+      <dl className="mt-6 space-y-3 text-sm text-slate-600">
         <div className="flex items-center justify-between gap-3">
           <dt>Languages</dt>
           <dd className="font-medium text-slate-700">

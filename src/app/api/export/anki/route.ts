@@ -2,6 +2,16 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import type { VocabularyItem } from "@/types";
 
+const EXPORT_COLUMNS = [
+  "Front",
+  "Back",
+  "Context",
+  "Selected Text",
+  "Unit Type",
+  "Confidence",
+  "Created At",
+] as const;
+
 type ExportVocabularyItem = Pick<
   VocabularyItem,
   | "selected_text"
@@ -47,7 +57,7 @@ function toFrontValue(item: ExportVocabularyItem) {
 }
 
 function buildCsv(items: ExportVocabularyItem[]) {
-  const lines: string[] = [];
+  const lines: string[] = items.length === 0 ? [toCsvRow([...EXPORT_COLUMNS])] : [];
 
   for (const item of items) {
     lines.push(

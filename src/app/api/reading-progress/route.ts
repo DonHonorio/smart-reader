@@ -28,6 +28,10 @@ function normalizeProgressPercentage(value: unknown) {
   return value;
 }
 
+function isProgressPercentageInRange(value: number) {
+  return value >= 0 && value <= 100;
+}
+
 function buildResponse(
   currentLocation: string | null,
   progressPercentage: unknown,
@@ -57,6 +61,21 @@ export async function GET(request: Request) {
       return jsonError("Authentication required.", 401);
     }
 
+    const { data: book, error: bookError } = await supabase
+      .from("books")
+      .select("id")
+      .eq("id", bookId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (bookError) {
+      return jsonError("Could not verify book access.", 500);
+    }
+
+    if (!book) {
+      return jsonError("Book not found.", 404);
+    }
+
     const { data, error } = await supabase
       .from("reading_progress")
       .select("current_location, progress_percentage")
@@ -65,7 +84,6 @@ export async function GET(request: Request) {
       .maybeSingle();
 
     if (error) {
-      console.error("/api/reading-progress GET query error:", error.message);
       return jsonError("Could not load reading progress.", 500);
     }
 
@@ -117,6 +135,10 @@ export async function POST(request: Request) {
     return jsonError("progressPercentage must be a valid number.", 400);
   }
 
+  if (!isProgressPercentageInRange(progressPercentage)) {
+    return jsonError("progressPercentage must be between 0 and 100.", 400);
+  }
+
   const normalizedProgressPercentage = normalizeProgressPercentage(progressPercentage);
 
   try {
@@ -138,7 +160,6 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     if (bookError) {
-      console.error("/api/reading-progress POST book query error:", bookError.message);
       return jsonError("Could not verify book access.", 500);
     }
 
@@ -160,7 +181,6 @@ export async function POST(request: Request) {
     );
 
     if (upsertError) {
-      console.error("/api/reading-progress POST upsert error:", upsertError.message);
       return jsonError("Could not save reading progress.", 500);
     }
 

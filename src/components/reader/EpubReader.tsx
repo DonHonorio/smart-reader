@@ -75,6 +75,18 @@ function getRelocatedCfi(payload: RelocatedPayload): string | null {
   return normalized || null;
 }
 
+function getLoadErrorMessage(status: number) {
+  if (status === 400 || status === 401 || status === 403) {
+    return "Reader session expired. Go back to Library and reopen the book.";
+  }
+
+  if (status === 404) {
+    return "EPUB file not found. Reopen the book from Library.";
+  }
+
+  return "Could not load this EPUB file right now. Please try again from Library.";
+}
+
 export function EpubReader({
   fileUrl,
   bookId,
@@ -141,7 +153,13 @@ export function EpubReader({
         });
 
         if (!response.ok) {
-          throw new Error(`EPUB request failed with status ${response.status}`);
+          if (!isCancelled) {
+            setErrorMessage(getLoadErrorMessage(response.status));
+            setIsLoading(false);
+            setIsReady(false);
+          }
+
+          return;
         }
 
         const epubData = await response.arrayBuffer();
@@ -303,9 +321,7 @@ export function EpubReader({
         console.error("EpubReader load error:", error);
 
         if (!isCancelled) {
-          setErrorMessage(
-            "Could not load this EPUB file. Check file_path and Storage permissions.",
-          );
+          setErrorMessage("Could not load this EPUB file right now. Please try again from Library.");
           setIsLoading(false);
           setIsReady(false);
         }

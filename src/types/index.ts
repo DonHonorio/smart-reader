@@ -109,6 +109,10 @@ export type SaveVocabularyRequest = {
   confidence: string;
 };
 
+export type SaveVocabularyStatus = "created" | "already_exists";
+
 export type SaveVocabularyResponse = {
   item: VocabularyItem;
+  status: SaveVocabularyStatus;
+  message: string;
 };

@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
 import type {
   TranslateRequestBody,
   TranslateResponse,
@@ -7,6 +8,9 @@ import type {
 } from "@/types";
 
 const MODEL_NAME = process.env.OPENAI_TRANSLATION_MODEL ?? "gpt-4o-mini";
+const MAX_SELECTED_TEXT_LENGTH = 300;
+const SELECTED_TEXT_TOO_LONG_ERROR =
+  "Selected text is too long. Please select a shorter word or phrase.";
 
 function normalizeText(value: string) {
   return value.replace(/\s+/g, " ").trim();
@@ -27,6 +31,16 @@ function isTranslationUnitType(value: unknown): value is TranslationUnitType {
 }
 
 export async function POST(request: Request) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    return jsonError("Unauthorized", 401);
+  }
+
   let body: unknown;
 
   try {
@@ -46,14 +60,14 @@ export async function POST(request: Request) {
     return jsonError("selectedText is required.", 400);
   }
 
+  if (selectedText.length > MAX_SELECTED_TEXT_LENGTH) {
+    return jsonError(SELECTED_TEXT_TOO_LONG_ERROR, 400);
+  }
+
   const normalizedSelectedText = normalizeText(selectedText);
 
   if (!normalizedSelectedText) {
     return jsonError("selectedText is required.", 400);
-  }
-
-  if (normalizedSelectedText.length > 300) {
-    return jsonError("selectedText is too long.", 400);
   }
 
   let normalizedContextSentence: string | null = null;
@@ -65,7 +79,7 @@ export async function POST(request: Request) {
 
     normalizedContextSentence = normalizeText(contextSentence);
 
-    if (normalizedContextSentence.length > 1000) {
+    if (normalizedContextSentence.length > 1500) {
       return jsonError("contextSentence is too long.", 400);
     }
 

@@ -29,7 +29,14 @@ function normalizeText(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function jsonError(message: string, status: number) {
+function jsonError(message: string, status: number, debugContext?: Record<string, unknown>) {
+  if (status === 400) {
+    console.warn("/api/vocabulary bad request:", {
+      message,
+      ...debugContext,
+    });
+  }
+
   return NextResponse.json({ error: message }, { status });
 }
 
@@ -109,7 +116,11 @@ function validateRequiredString(
   if (typeof value !== "string") {
     return {
       ok: false,
-      response: jsonError(`${fieldName} is required.`, 400),
+      response: jsonError(`${fieldName} is required.`, 400, {
+        reason: "invalid_type",
+        fieldName,
+        receivedType: typeof value,
+      }),
     };
   }
 
@@ -118,14 +129,22 @@ function validateRequiredString(
   if (!normalized) {
     return {
       ok: false,
-      response: jsonError(`${fieldName} is required.`, 400),
+      response: jsonError(`${fieldName} is required.`, 400, {
+        reason: "required_empty",
+        fieldName,
+      }),
     };
   }
 
   if (normalized.length > maxLength) {
     return {
       ok: false,
-      response: jsonError(`${fieldName} is too long.`, 400),
+      response: jsonError(`${fieldName} is too long.`, 400, {
+        reason: "max_length_exceeded",
+        fieldName,
+        maxLength,
+        actualLength: normalized.length,
+      }),
     };
   }
 
@@ -138,7 +157,9 @@ export async function POST(request: Request) {
   try {
     body = await request.json();
   } catch {
-    return jsonError("Invalid request body.", 400);
+    return jsonError("Invalid request body.", 400, {
+      reason: "invalid_json",
+    });
   }
 
   const {
@@ -182,7 +203,7 @@ export async function POST(request: Request) {
     return validatedTranslation.response;
   }
 
-  const validatedContextSentence = validateRequiredString(contextSentence, "contextSentence", 1500);
+  const validatedContextSentence = validateRequiredString(contextSentence, "contextSentence", 1000);
 
   if (!validatedContextSentence.ok) {
     return validatedContextSentence.response;
@@ -231,6 +252,38 @@ export async function POST(request: Request) {
 
     if (!book) {
       return jsonError("Book not found.", 404);
+    }
+
+    const { data: existingItem, error: existingItemError } = await supabase
+      .from("vocabulary_items")
+      .select("*")
+      .eq("user_id", user.id)
+      .eq("book_id", validatedBookId.value)
+      .eq("term", validatedTerm.value)
+      .eq("context_sentence", validatedContextSentence.value)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (existingItemError) {
+      console.error("/api/vocabulary duplicate check error:", existingItemError.message);
+      const mappedError = mapSupabaseError(
+        existingItemError,
+        "Could not verify existing vocabulary item.",
+      );
+      return jsonError(mappedError.message, mappedError.status);
+    }
+
+    if (existingItem) {
+      const existingPayload: SaveVocabularyResponse = {
+        item: existingItem as VocabularyItem,
+        status: "already_exists",
+        message: "This item was already saved.",
+      };
+
+      console.warn("/api/vocabulary duplicate item: " + JSON.stringify(existingItem));
+
+      return NextResponse.json(existingPayload);
     }
 
     const insertPayload: InsertVocabularyPayload = {
@@ -294,6 +347,8 @@ export async function POST(request: Request) {
       item:
         (insertedItem as VocabularyItem | null) ??
         buildFallbackVocabularyItem(insertPayload, savedWithLegacyShape),
+      status: "created",
+      message: "Saved.",
     };
 
     return NextResponse.json(payload);

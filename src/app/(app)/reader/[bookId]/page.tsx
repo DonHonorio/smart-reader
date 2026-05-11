@@ -40,7 +40,7 @@ export default async function ReaderBookPage({ params }: ReaderBookPageProps) {
     return (
       <section className="mx-auto w-full max-w-4xl space-y-4 py-2">
         <header className="space-y-2">
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
+          <h1 className="line-clamp-3 max-w-full break-words text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
             {book.title}
           </h1>
           <p className="text-sm text-slate-600">{author}</p>
@@ -62,7 +62,7 @@ export default async function ReaderBookPage({ params }: ReaderBookPageProps) {
   const supabase = await createClient();
   const { data: signedData, error: signedUrlError } = await supabase.storage
     .from("books")
-    .createSignedUrl(book.file_path, 60 * 30);
+    .createSignedUrl(book.file_path, 60 * 60);
 
   if (signedUrlError || !signedData?.signedUrl) {
     return (

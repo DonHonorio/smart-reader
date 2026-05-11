@@ -4,6 +4,10 @@ import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import type { SaveVocabularyRequest, SaveVocabularyResponse } from "@/types";
 
+const MAX_SELECTED_TEXT_LENGTH = 300;
+const SELECTED_TEXT_TOO_LONG_ERROR =
+  "Selected text is too long. Please select a shorter word or phrase.";
+
 type SelectionPanelProps = {
   bookId: string;
   selectedText: string;
@@ -86,7 +90,7 @@ export function SelectionPanel({
   } | null>(null);
   const [saveState, setSaveState] = useState<{
     key: string;
-    status: "saved" | "error";
+    status: "created" | "already_exists" | "error";
     message: string;
   } | null>(null);
 
@@ -98,12 +102,30 @@ export function SelectionPanel({
   const translation = translationState?.key === selectionKey ? translationState.value : null;
   const errorMessage = errorState?.key === selectionKey ? errorState.message : null;
   const currentSaveState = saveState?.key === selectionKey ? saveState : null;
-  const isSaved = currentSaveState?.status === "saved";
+  const isSaved =
+    currentSaveState?.status === "created" ||
+    currentSaveState?.status === "already_exists";
   const saveErrorMessage = currentSaveState?.status === "error" ? currentSaveState.message : null;
-  const saveSuccessMessage = currentSaveState?.status === "saved" ? currentSaveState.message : null;
+  const saveSuccessMessage = isSaved ? currentSaveState?.message ?? null : null;
+  const saveButtonLabel =
+    currentSaveState?.status === "already_exists"
+      ? "Already saved"
+      : currentSaveState?.status === "created"
+        ? "Saved"
+        : isSaving
+          ? "Saving..."
+          : "Save";
 
   async function handleTranslate() {
     if (!selectedText || isTranslating) {
+      return;
+    }
+
+    if (selectedText.length > MAX_SELECTED_TEXT_LENGTH) {
+      setErrorState({
+        key: selectionKey,
+        message: SELECTED_TEXT_TOO_LONG_ERROR,
+      });
       return;
     }
 
@@ -124,15 +146,26 @@ export function SelectionPanel({
         }),
       });
 
-      const data = (await response.json()) as Record<string, unknown> & {
-        error?: string;
-      };
+      let data: (Record<string, unknown> & { error?: string }) | null = null;
 
-      if (!response.ok) {
-        throw new Error(data.error || "Translation request failed.");
+      try {
+        data = (await response.json()) as Record<string, unknown> & {
+          error?: string;
+        };
+      } catch {
+        data = null;
       }
 
-      const normalizedTranslation = normalizeTranslatePayload(data);
+      if (!response.ok) {
+        const serverError =
+          typeof data?.error === "string" && data.error.trim()
+            ? data.error
+            : "Could not translate right now.";
+
+        throw new Error(serverError);
+      }
+
+      const normalizedTranslation = normalizeTranslatePayload(data ?? {});
 
       if (!normalizedTranslation) {
         throw new Error("Empty translation response.");
@@ -143,8 +176,11 @@ export function SelectionPanel({
         value: normalizedTranslation,
       });
       setSaveState(null);
-    } catch {
-      setErrorState({ key: selectionKey, message: "Could not translate right now." });
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message ? error.message : "Could not translate right now.";
+
+      setErrorState({ key: selectionKey, message });
     } finally {
       setIsTranslating(false);
     }
@@ -193,14 +229,24 @@ export function SelectionPanel({
         error?: string;
       };
 
-      if (!response.ok || typeof data.item !== "object" || data.item === null) {
+      if (!response.ok) {
         throw new Error(data.error || "Save request failed.");
       }
 
+      if (typeof data.item !== "object" || data.item === null) {
+        throw new Error("Save request failed.");
+      }
+
+      if (data.status !== "created" && data.status !== "already_exists") {
+        throw new Error("Save request failed.");
+      }
+
+      const message = data.status === "already_exists" ? "Already saved" : "Saved";
+
       setSaveState({
         key: selectionKey,
-        status: "saved",
-        message: "Saved",
+        status: data.status,
+        message,
       });
     } catch (error) {
       const message =
@@ -286,7 +332,7 @@ export function SelectionPanel({
           onClick={handleSave}
           disabled={!translation || isSaving || isSaved}
         >
-          {isSaved ? "Saved" : isSaving ? "Saving..." : "Save"}
+          {saveButtonLabel}
         </Button>
         <Button variant="ghost" size="sm" onClick={handleClear}>
           Clear
