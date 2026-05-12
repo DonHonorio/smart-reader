@@ -22,6 +22,30 @@ export type Book = {
   updated_at: string;
 };
 
+export type CreditTransactionType =
+  | "signup_bonus"
+  | "purchase"
+  | "book_unlock"
+  | "refund"
+  | "adjustment";
+
+export type UserCredits = {
+  user_id: string;
+  balance: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreditTransaction = {
+  id: string;
+  user_id: string;
+  type: CreditTransactionType;
+  amount: number;
+  reason: string | null;
+  book_id: string | null;
+  created_at: string;
+};
+
 export type EpubReaderProps = {
   fileUrl: string;
   bookId: string;

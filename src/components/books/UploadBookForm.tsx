@@ -1,13 +1,15 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Button } from "@/components/ui/Button";
+import { Button, buttonClassNames } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import {
   uploadBookAction,
   type UploadBookActionState,
 } from "@/app/(app)/library/actions";
+import { ROUTES } from "@/lib/constants";
 
 const MAX_EPUB_SIZE_BYTES = 25 * 1024 * 1024;
 const MAX_TITLE_LENGTH = 160;
@@ -16,6 +18,7 @@ const FILE_TOO_LARGE_ERROR = "The EPUB file is too large. Maximum size is 25 MB.
 const TITLE_TOO_LONG_ERROR = "Title is too long. Maximum length is 160 characters.";
 const UNEXPECTED_UPLOAD_ERROR =
   "Could not upload this file. If it is stored in Google Drive or another cloud provider, download it to your device first and try again.";
+const INSUFFICIENT_CREDITS_FORM_ERROR = "You need 1 credit to upload a book.";
 
 const initialUploadBookActionState: UploadBookActionState = {
   error: null,
@@ -56,54 +59,75 @@ function getClientValidationError(title: string, file: File | null | undefined) 
   return getTitleLengthError(title) ?? getFileSizeError(file);
 }
 
-export function UploadBookForm() {
+type UploadBookFormProps = {
+  creditsBalance: number;
+};
+
+export function UploadBookForm({ creditsBalance }: UploadBookFormProps) {
   const router = useRouter();
-  const [clientError, setClientError] = useState<string | null>(null);
-  const [serverError, setServerError] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [title, setTitle] = useState("");
+  const normalizedCredits = Math.max(0, creditsBalance);
+  const hasCredits = normalizedCredits > 0;
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const form = event.currentTarget;
 
     if (isUploading) {
       return;
     }
 
-    const titleInput = event.currentTarget.elements.namedItem("title");
-    const fileInput = event.currentTarget.elements.namedItem("file");
+    if (!hasCredits) {
+      setUploadError(null);
+      setUploadSuccess(null);
+      return;
+    }
+
+    const titleInput = form.elements.namedItem("title");
+    const fileInput = form.elements.namedItem("file");
 
     if (!(titleInput instanceof HTMLInputElement) || !(fileInput instanceof HTMLInputElement)) {
       return;
     }
 
-    const validationError = getClientValidationError(titleInput.value, fileInput.files?.[0]);
+    const nextValidationError = getClientValidationError(titleInput.value, fileInput.files?.[0]);
 
-    if (validationError) {
-      setClientError(validationError);
-      setServerError(null);
+    if (nextValidationError) {
+      setValidationError(nextValidationError);
+      setUploadError(null);
+      setUploadSuccess(null);
       return;
     }
 
-    setClientError(null);
-    setServerError(null);
+    setValidationError(null);
+    setUploadError(null);
+    setUploadSuccess(null);
     setIsUploading(true);
 
     try {
-      const formData = new FormData(event.currentTarget);
+      const formData = new FormData(form);
       const result = await uploadBookAction(initialUploadBookActionState, formData);
 
       if (result.error) {
-        setServerError(result.error);
+        setUploadError(result.error);
+        setUploadSuccess(null);
         return;
       }
 
-      event.currentTarget.reset();
+      form.reset();
       setTitle("");
+      setValidationError(null);
+      setUploadError(null);
+      setUploadSuccess("Book uploaded successfully. 1 credit was used.");
       router.refresh();
     } catch (error) {
       console.error("UploadBookForm unexpected upload error:", error);
-      setServerError(UNEXPECTED_UPLOAD_ERROR);
+      setUploadSuccess(null);
+      setUploadError(UNEXPECTED_UPLOAD_ERROR);
     } finally {
       setIsUploading(false);
     }
@@ -116,8 +140,9 @@ export function UploadBookForm() {
     const file = fileInput instanceof HTMLInputElement ? fileInput.files?.[0] : null;
 
     setTitle(nextTitle);
-    setClientError(getClientValidationError(nextTitle, file));
-    setServerError(null);
+    setValidationError(getClientValidationError(nextTitle, file));
+    setUploadError(null);
+    setUploadSuccess(null);
   }
 
   function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
@@ -130,11 +155,12 @@ export function UploadBookForm() {
       setTitle(suggestedTitle);
     }
 
-    setClientError(getClientValidationError(nextTitle, file));
-    setServerError(null);
+    setValidationError(getClientValidationError(nextTitle, file));
+    setUploadError(null);
+    setUploadSuccess(null);
   }
 
-  const errorMessage = clientError ?? serverError;
+  const errorMessage = validationError ?? uploadError;
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
@@ -192,13 +218,35 @@ export function UploadBookForm() {
         </p>
       </div>
 
+      {!hasCredits && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800">
+          <p>{INSUFFICIENT_CREDITS_FORM_ERROR}</p>
+          <Link
+            href={ROUTES.export}
+            className={buttonClassNames({ variant: "secondary", size: "sm", className: "mt-3" })}
+          >
+            Buy credits
+          </Link>
+        </div>
+      )}
+
+      {uploadSuccess && (
+        <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+          {uploadSuccess}
+        </p>
+      )}
+
       {errorMessage && (
         <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
           {errorMessage}
         </p>
       )}
 
-      <Button type="submit" variant="secondary" disabled={isUploading || Boolean(clientError)}>
+      <Button
+        type="submit"
+        variant="secondary"
+        disabled={!hasCredits || isUploading || Boolean(validationError)}
+      >
         {isUploading ? "Uploading..." : "Upload EPUB"}
       </Button>
     </form>

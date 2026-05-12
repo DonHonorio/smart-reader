@@ -3,6 +3,7 @@
 import JSZip from "jszip";
 import { revalidatePath } from "next/cache";
 import { buildBookStoragePath } from "@/lib/books";
+import { consumeBookCredit, hasEnoughCredits } from "@/lib/credits";
 import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -18,6 +19,7 @@ const TITLE_TOO_LONG_ERROR = "Title is too long. Maximum length is 160 character
 const FILE_READ_ERROR =
   "Could not read this file. If it is stored in cloud storage, download it to your device first and try again.";
 const STORAGE_UPLOAD_ERROR = "Could not upload this file. Please try again.";
+const INSUFFICIENT_CREDITS_ERROR = "You need 1 credit to upload a new book.";
 
 export type UploadBookActionState = {
   error: string | null;
@@ -124,6 +126,12 @@ export async function uploadBookAction(
     return { error: INVALID_EPUB_ERROR };
   }
 
+  const canUploadBook = await hasEnoughCredits(1);
+
+  if (!canUploadBook) {
+    return { error: INSUFFICIENT_CREDITS_ERROR };
+  }
+
   const { data: bookRecord, error: insertError } = await supabase
     .from("books")
     .insert({
@@ -170,6 +178,13 @@ export async function uploadBookAction(
   if (updateError) {
     await cleanupOrphanBook(supabase, user.id, bookId, filePath);
     return { error: "Upload succeeded, but saving the book failed." };
+  }
+
+  const creditConsumptionResult = await consumeBookCredit(bookId);
+
+  if (!creditConsumptionResult.success) {
+    await cleanupOrphanBook(supabase, user.id, bookId, filePath);
+    return { error: creditConsumptionResult.error };
   }
 
   revalidatePath("/library");

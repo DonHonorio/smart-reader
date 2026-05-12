@@ -3,9 +3,11 @@ import { EmptyLibraryState } from "@/components/books/EmptyLibraryState";
 import { UploadBookButton } from "@/components/books/UploadBookButton";
 import { UploadBookForm } from "@/components/books/UploadBookForm";
 import { getUserBooks } from "@/lib/books";
+import { getUserCredits } from "@/lib/credits";
 
 export default async function LibraryPage() {
   const books = await getUserBooks();
+  const creditsBalance = (await getUserCredits()) ?? 0;
   const hasBooks = books.length > 0;
 
   return (
@@ -18,8 +20,8 @@ export default async function LibraryPage() {
       </header>
 
       <div id="upload-book-panel">
-        <UploadBookButton initiallyOpen={!hasBooks}>
-          <UploadBookForm />
+        <UploadBookButton initiallyOpen={!hasBooks} creditsBalance={creditsBalance}>
+          <UploadBookForm creditsBalance={creditsBalance} />
         </UploadBookButton>
       </div>
 

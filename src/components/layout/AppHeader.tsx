@@ -11,10 +11,19 @@ import {
 } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
 
-export function AppHeader() {
+type AppHeaderProps = {
+  creditsBalance?: number | null;
+};
+
+export function AppHeader({ creditsBalance = null }: AppHeaderProps) {
   const pathname = usePathname() ?? "";
   const sectionName = getAppSectionName(pathname);
   const isReaderRoute = pathname.startsWith("/reader/");
+  const normalizedCredits =
+    typeof creditsBalance === "number" && !Number.isNaN(creditsBalance)
+      ? Math.max(0, creditsBalance)
+      : null;
+  const shouldShowCredits = !isReaderRoute && normalizedCredits !== null;
 
   return (
     <>
@@ -40,14 +49,21 @@ export function AppHeader() {
               <Link href={ROUTES.home} className="text-lg font-semibold tracking-tight text-slate-900">
                 {APP_TITLE}
               </Link>
-              <form action="/logout" method="post">
-                <button
-                  type="submit"
-                  className={buttonClassNames({ variant: "secondary", size: "sm" })}
-                >
-                  Logout
-                </button>
-              </form>
+              <div className="flex items-center gap-2">
+                {shouldShowCredits && (
+                  <p className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
+                    Credits: {normalizedCredits}
+                  </p>
+                )}
+                <form action="/logout" method="post">
+                  <button
+                    type="submit"
+                    className={buttonClassNames({ variant: "secondary", size: "sm" })}
+                  >
+                    Logout
+                  </button>
+                </form>
+              </div>
             </>
           )}
         </div>
@@ -68,11 +84,18 @@ export function AppHeader() {
                 </p>
                 <h1 className="text-xl font-semibold tracking-tight text-slate-900">{sectionName}</h1>
               </div>
-              <form action="/logout" method="post">
-                <button type="submit" className={buttonClassNames({ variant: "secondary" })}>
-                  Logout
-                </button>
-              </form>
+              <div className="flex items-center gap-2">
+                {shouldShowCredits && (
+                  <p className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-700">
+                    Credits: {normalizedCredits}
+                  </p>
+                )}
+                <form action="/logout" method="post">
+                  <button type="submit" className={buttonClassNames({ variant: "secondary" })}>
+                    Logout
+                  </button>
+                </form>
+              </div>
             </>
           )}
         </div>

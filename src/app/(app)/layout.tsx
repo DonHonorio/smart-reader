@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
 import { AppShell } from "@/components/layout/AppShell";
+import { getUserCredits } from "@/lib/credits";
 import { createClient } from "@/lib/supabase/server";
 
 type PrivateAppLayoutProps = {
@@ -17,5 +18,7 @@ export default async function PrivateAppLayout({ children }: PrivateAppLayoutPro
     redirect("/login");
   }
 
-  return <AppShell>{children}</AppShell>;
+  const creditsBalance = await getUserCredits();
+
+  return <AppShell creditsBalance={creditsBalance}>{children}</AppShell>;
 }
