@@ -222,7 +222,7 @@ export function UploadBookForm({ creditsBalance }: UploadBookFormProps) {
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800">
           <p>{INSUFFICIENT_CREDITS_FORM_ERROR}</p>
           <Link
-            href={ROUTES.export}
+            href={ROUTES.billing}
             className={buttonClassNames({ variant: "secondary", size: "sm", className: "mt-3" })}
           >
             Buy credits

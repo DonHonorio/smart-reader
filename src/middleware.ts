@@ -1,7 +1,14 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { updateSession } from "@/lib/supabase/middleware";
 
-const PRIVATE_ROUTE_PREFIXES = ["/dashboard", "/library", "/reader", "/vocabulary", "/export"];
+const PRIVATE_ROUTE_PREFIXES = [
+  "/dashboard",
+  "/library",
+  "/reader",
+  "/vocabulary",
+  "/export",
+  "/billing",
+];
 const AUTH_ROUTES = new Set(["/login", "/register"]);
 
 function isPrivateRoute(pathname: string) {
@@ -42,6 +49,7 @@ export const config = {
     "/reader/:path*",
     "/vocabulary/:path*",
     "/export/:path*",
+    "/billing/:path*",
     "/login",
     "/register",
   ],

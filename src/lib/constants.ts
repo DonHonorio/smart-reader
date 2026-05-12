@@ -11,5 +11,6 @@ export const ROUTES = {
   library: "/library",
   vocabulary: "/vocabulary",
   export: "/export",
+  billing: "/billing",
   reader: (bookId: string) => `/reader/${bookId}`,
 } as const;

@@ -1,8 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import type { ReactNode } from "react";
 import { useState } from "react";
-import { Button } from "@/components/ui/Button";
+import { Button, buttonClassNames } from "@/components/ui/Button";
+import { ROUTES } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
 type UploadBookButtonProps = {
@@ -38,9 +40,15 @@ export function UploadBookButton({
       </div>
 
       {!hasCredits && (
-        <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-          You need credits to upload more books.
-        </p>
+        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800">
+          <p>You need 1 credit to upload a book.</p>
+          <Link
+            href={ROUTES.billing}
+            className={buttonClassNames({ variant: "secondary", size: "sm", className: "mt-3" })}
+          >
+            Buy credits
+          </Link>
+        </div>
       )}
 
       <div className={cn("mt-4", !isOpen && "hidden")}>{children}</div>

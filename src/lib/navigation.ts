@@ -6,6 +6,7 @@ export const PRIVATE_NAVIGATION: NavigationItem[] = [
   { label: "Library", href: ROUTES.library },
   { label: "Vocabulary", href: ROUTES.vocabulary },
   { label: "Export", href: ROUTES.export },
+  { label: "Billing", href: ROUTES.billing },
 ];
 
 export const MARKETING_NAVIGATION: NavigationItem[] = [
@@ -18,6 +19,7 @@ const STATIC_SECTION_NAMES: Record<string, string> = {
   [ROUTES.library]: "Library",
   [ROUTES.vocabulary]: "Vocabulary",
   [ROUTES.export]: "Export",
+  [ROUTES.billing]: "Billing",
 };
 
 export function getAppSectionName(pathname: string) {

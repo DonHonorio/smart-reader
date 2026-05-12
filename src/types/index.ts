@@ -46,6 +46,18 @@ export type CreditTransaction = {
   created_at: string;
 };
 
+export type CreditPack = {
+  id: string;
+  name: string;
+  credits: number;
+  priceCents: number;
+  displayPrice: string;
+  description: string;
+  pricePerBook: string;
+  highlighted?: boolean;
+  badge?: string;
+};
+
 export type EpubReaderProps = {
   fileUrl: string;
   bookId: string;
