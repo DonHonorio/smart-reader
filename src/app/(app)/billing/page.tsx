@@ -3,7 +3,15 @@ import { CreditPackCard } from "@/components/billing/CreditPackCard";
 import { CREDIT_PACKS } from "@/lib/billing";
 import { getUserCredits } from "@/lib/credits";
 
-export default async function BillingPage() {
+type BillingPageProps = {
+  searchParams: Promise<{
+    checkout?: string;
+  }>;
+};
+
+export default async function BillingPage({ searchParams }: BillingPageProps) {
+  const params = await searchParams;
+  const checkoutStatus = typeof params.checkout === "string" ? params.checkout : undefined;
   const creditsBalance = (await getUserCredits()) ?? 0;
 
   return (
@@ -14,6 +22,18 @@ export default async function BillingPage() {
           Buy credits to unlock more books. No subscription required.
         </p>
       </header>
+
+      {checkoutStatus === "success" && (
+        <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+          Payment received. Your credits will appear shortly.
+        </p>
+      )}
+
+      {checkoutStatus === "cancelled" && (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+          Checkout cancelled. No credits were added.
+        </p>
+      )}
 
       <CreditBalanceCard balance={creditsBalance} />
 

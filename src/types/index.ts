@@ -43,6 +43,7 @@ export type CreditTransaction = {
   amount: number;
   reason: string | null;
   book_id: string | null;
+  stripe_session_id: string | null;
   created_at: string;
 };
 

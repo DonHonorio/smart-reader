@@ -32,3 +32,7 @@ export const CREDIT_PACKS: CreditPack[] = [
     badge: "Best value",
   },
 ];
+
+export function getCreditPackById(packId: string) {
+  return CREDIT_PACKS.find((pack) => pack.id === packId);
+}

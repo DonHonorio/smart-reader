@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
 import type { CreditPack } from "@/types";
@@ -6,7 +9,63 @@ type CreditPackCardProps = {
   pack: CreditPack;
 };
 
+type CheckoutResponse = {
+  url?: string;
+  error?: string;
+};
+
 export function CreditPackCard({ pack }: CreditPackCardProps) {
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleCheckout() {
+    if (isLoading) {
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/stripe/checkout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ packId: pack.id }),
+      });
+
+      let payload: CheckoutResponse | null = null;
+
+      try {
+        payload = (await response.json()) as CheckoutResponse;
+      } catch {
+        payload = null;
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          typeof payload?.error === "string" && payload.error
+            ? payload.error
+            : "Could not start checkout.",
+        );
+      }
+
+      if (typeof payload?.url !== "string" || !payload.url) {
+        throw new Error("Could not start checkout.");
+      }
+
+      window.location.href = payload.url;
+    } catch (checkoutError) {
+      setIsLoading(false);
+      setError(
+        checkoutError instanceof Error && checkoutError.message
+          ? checkoutError.message
+          : "Could not start checkout.",
+      );
+    }
+  }
+
   return (
     <article
       className={cn(
@@ -34,11 +93,12 @@ export function CreditPackCard({ pack }: CreditPackCardProps) {
       <Button
         variant={pack.highlighted ? "primary" : "secondary"}
         className="mt-6 w-full"
-        disabled
+        onClick={handleCheckout}
+        disabled={isLoading}
       >
-        Buy credits
+        {isLoading ? "Redirecting..." : "Buy credits"}
       </Button>
-      <p className="mt-2 text-xs text-slate-500">Coming soon</p>
+      {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
     </article>
   );
 }
