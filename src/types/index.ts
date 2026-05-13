@@ -89,6 +89,30 @@ export type ReadingProgress = {
   updated_at: string;
 };
 
+export type DashboardLatestBook = {
+  id: string;
+  title: string;
+  author: string | null;
+  status: string;
+  created_at: string;
+};
+
+export type DashboardLatestReadingProgress = {
+  book_id: string;
+  current_location: string | null;
+  progress_percentage: number;
+  updated_at: string;
+  book_title: string | null;
+};
+
+export type DashboardData = {
+  creditsBalance: number;
+  booksCount: number;
+  vocabularyCount: number;
+  latestBook: DashboardLatestBook | null;
+  latestReadingProgress: DashboardLatestReadingProgress | null;
+};
+
 export type ReadingProgressResponse = {
   currentLocation: string | null;
   progressPercentage: number;
