@@ -8,7 +8,7 @@ export function EmptyVocabularyState() {
     <Card
       className="text-center"
       title="No vocabulary saved yet"
-      description="Select text while reading and save translations to build your Anki-ready deck."
+      description="Select text while reading and save translations to build a searchable, Anki-ready deck."
     >
       <div className="flex justify-center">
         <Link href={ROUTES.library} className={buttonClassNames({ variant: "secondary" })}>

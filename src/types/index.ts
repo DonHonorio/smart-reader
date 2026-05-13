@@ -136,12 +136,17 @@ export type TranslateRequestBody = {
   targetLanguage: string;
 };
 
-export type TranslationUnitType =
+export type VocabularySortOrder = "newest" | "oldest";
+
+export type VocabularyUnitType =
   | "single_word"
   | "phrasal_verb"
   | "idiom"
   | "collocation"
+  | "fixed_expression"
   | "phrase";
+
+export type TranslationUnitType = VocabularyUnitType;
 
 export type LegacyTranslateResponse = {
   selectedText: string;
@@ -176,6 +181,19 @@ export type VocabularyItem = {
   confidence: string | null;
   status: string;
   created_at: string;
+};
+
+export type GetUserVocabularyItemsParams = {
+  search?: string;
+  unitType?: string;
+  bookId?: string;
+  sort?: VocabularySortOrder;
+  limit?: number;
+};
+
+export type VocabularyBookFilterOption = {
+  id: string;
+  title: string;
 };
 
 export type SaveVocabularyRequest = {

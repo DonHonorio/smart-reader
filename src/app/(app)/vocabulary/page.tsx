@@ -1,29 +1,115 @@
-import { EmptyVocabularyState } from "@/components/vocabulary/EmptyVocabularyState";
-import { VocabularyCard } from "@/components/vocabulary/VocabularyCard";
+import { VocabularyFilters } from "@/components/vocabulary/VocabularyFilters";
+import { VocabularyList } from "@/components/vocabulary/VocabularyList";
+import { getUserBooks } from "@/lib/books";
 import { getUserVocabularyItems } from "@/lib/vocabulary";
+import type {
+  GetUserVocabularyItemsParams,
+  VocabularyBookFilterOption,
+  VocabularySortOrder,
+} from "@/types";
 
-export default async function VocabularyPage() {
-  const items = await getUserVocabularyItems();
-  const hasItems = items.length > 0;
+type SearchParamValue = string | string[] | undefined;
+
+type VocabularyPageProps = {
+  searchParams: Promise<{
+    search?: SearchParamValue;
+    type?: SearchParamValue;
+    sort?: SearchParamValue;
+    book?: SearchParamValue;
+  }>;
+};
+
+function getFirstSearchParam(value: SearchParamValue) {
+  if (Array.isArray(value)) {
+    return value[0] ?? "";
+  }
+
+  return value ?? "";
+}
+
+function normalizeQueryValue(value: SearchParamValue) {
+  return getFirstSearchParam(value).trim();
+}
+
+function normalizeUnitType(value: SearchParamValue) {
+  const normalized = normalizeQueryValue(value);
+
+  if (!normalized || normalized.toLowerCase() === "all") {
+    return "";
+  }
+
+  return normalized;
+}
+
+function normalizeBookId(value: SearchParamValue) {
+  const normalized = normalizeQueryValue(value);
+
+  if (!normalized || normalized.toLowerCase() === "all") {
+    return "";
+  }
+
+  return normalized;
+}
+
+function normalizeSort(value: SearchParamValue): VocabularySortOrder {
+  return normalizeQueryValue(value) === "oldest" ? "oldest" : "newest";
+}
+
+function toBookFilterOptions(books: { id: string; title: string }[]): VocabularyBookFilterOption[] {
+  return books
+    .map((book) => ({
+      id: book.id,
+      title: book.title.trim() || "Untitled book",
+    }))
+    .sort((leftBook, rightBook) => leftBook.title.localeCompare(rightBook.title));
+}
+
+export default async function VocabularyPage({ searchParams }: VocabularyPageProps) {
+  const params = await searchParams;
+  const search = normalizeQueryValue(params.search);
+  const unitType = normalizeUnitType(params.type);
+  const sort = normalizeSort(params.sort);
+  const bookId = normalizeBookId(params.book);
+  const hasActiveFilters = Boolean(search || unitType || bookId);
+
+  const vocabularyParams: GetUserVocabularyItemsParams = {
+    search: search || undefined,
+    unitType: unitType || undefined,
+    bookId: bookId || undefined,
+    sort,
+  };
+
+  const [items, books] = await Promise.all([
+    getUserVocabularyItems(vocabularyParams),
+    getUserBooks(),
+  ]);
+  const bookFilterOptions = toBookFilterOptions(books);
+  const bookTitlesById = Object.fromEntries(bookFilterOptions.map((book) => [book.id, book.title]));
+  const savedItemsLabel = `${items.length} saved item${items.length === 1 ? "" : "s"}`;
 
   return (
     <section className="mx-auto w-full max-w-6xl space-y-6">
-      <header className="space-y-2">
-        <h1 className="text-3xl font-semibold tracking-tight text-slate-900 sm:text-4xl">Vocabulary</h1>
-        <p className="max-w-2xl text-base leading-7 text-slate-600">
-          Your saved terms, expressions, and context sentences collected while reading.
-        </p>
-      </header>
+      <div className="sticky top-0 z-20">
+        <VocabularyFilters
+          initialSearch={search}
+          initialUnitType={unitType || "all"}
+          initialSort={sort}
+          initialBookId={bookId || "all"}
+          books={bookFilterOptions}
+          helperText="Your saved terms, expressions, and context sentences collected while reading."
+        />
+      </div>
 
-      {!hasItems ? (
-        <EmptyVocabularyState />
-      ) : (
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {items.map((item) => (
-            <VocabularyCard key={item.id || `${item.book_id}-${item.term}-${item.created_at}`} item={item} />
-          ))}
-        </div>
-      )}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-medium text-slate-700">{savedItemsLabel}</p>
+        {hasActiveFilters && <p className="text-xs text-slate-500">Showing filtered results</p>}
+      </div>
+
+      <VocabularyList
+        items={items}
+        hasActiveFilters={hasActiveFilters}
+        bookTitlesById={bookTitlesById}
+      />
     </section>
   );
 }
