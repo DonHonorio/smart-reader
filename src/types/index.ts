@@ -22,6 +22,11 @@ export type Book = {
   updated_at: string;
 };
 
+export type BookWithProgress = Book & {
+  progress_percentage?: number | null;
+  last_read_at?: string | null;
+};
+
 export type CreditTransactionType =
   | "signup_bonus"
   | "purchase"
@@ -121,7 +126,7 @@ export type ReadingProgressResponse = {
 export type UpsertReadingProgressRequest = {
   bookId: string;
   currentLocation: string;
-  progressPercentage: number;
+  progressPercentage?: number;
 };
 
 export type TranslateRequestBody = {

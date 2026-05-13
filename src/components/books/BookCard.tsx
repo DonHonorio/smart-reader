@@ -1,12 +1,39 @@
 import Link from "next/link";
+import { BookProgressBadge } from "@/components/books/BookProgressBadge";
 import { buttonClassNames } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { ROUTES } from "@/lib/constants";
-import type { Book } from "@/types";
+import type { BookWithProgress } from "@/types";
 
 type BookCardProps = {
-  book: Book;
+  book: BookWithProgress;
 };
+
+function normalizeProgressPercentage(value: number | null | undefined) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return 0;
+  }
+
+  if (value < 0) {
+    return 0;
+  }
+
+  if (value > 100) {
+    return 100;
+  }
+
+  return value;
+}
+
+function formatStatusLabel(value: string) {
+  const normalized = value.trim();
+
+  if (!normalized) {
+    return "processing";
+  }
+
+  return normalized.replaceAll("_", " ");
+}
 
 function formatCreatedAt(value: string) {
   const date = new Date(value);
@@ -25,6 +52,8 @@ function formatCreatedAt(value: string) {
 export function BookCard({ book }: BookCardProps) {
   const author = book.author?.trim() ? book.author : "Unknown author";
   const statusLabel = book.file_path ? book.status : "processing";
+  const normalizedProgress = normalizeProgressPercentage(book.progress_percentage);
+  const primaryActionLabel = normalizedProgress > 0 ? "Continue reading" : "Start reading";
 
   return (
     <Card
@@ -34,12 +63,12 @@ export function BookCard({ book }: BookCardProps) {
           href={ROUTES.reader(book.id)}
           className={buttonClassNames({ variant: "secondary", size: "sm" })}
         >
-          Open reader
+          {primaryActionLabel}
         </Link>
       }
     >
       <div className="space-y-1">
-        <h2 className="line-clamp-2 max-w-full break-words text-xl font-semibold tracking-tight text-slate-900">
+        <h2 className="line-clamp-2 max-w-full wrap-break-word text-xl font-semibold tracking-tight text-slate-900">
           {book.title}
         </h2>
         <p className="truncate text-sm leading-6 text-slate-600">{author}</p>
@@ -55,11 +84,17 @@ export function BookCard({ book }: BookCardProps) {
         <div className="flex items-center justify-between gap-3">
           <dt>Status</dt>
           <dd className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700">
-            {statusLabel}
+            {formatStatusLabel(statusLabel)}
           </dd>
         </div>
         <div className="flex items-center justify-between gap-3">
-          <dt>Created</dt>
+          <dt>Progress</dt>
+          <dd>
+            <BookProgressBadge progressPercentage={book.progress_percentage} />
+          </dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt>Uploaded</dt>
           <dd className="font-medium text-slate-700">{formatCreatedAt(book.created_at)}</dd>
         </div>
       </dl>

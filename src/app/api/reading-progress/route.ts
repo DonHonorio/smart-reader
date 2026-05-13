@@ -28,6 +28,34 @@ function normalizeProgressPercentage(value: unknown) {
   return value;
 }
 
+function parseOptionalProgressPercentage(value: unknown) {
+  if (typeof value === "undefined") {
+    return {
+      isProvided: false,
+      value: undefined,
+    } as const;
+  }
+
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return {
+      isProvided: true,
+      value: null,
+    } as const;
+  }
+
+  if (!isProgressPercentageInRange(value)) {
+    return {
+      isProvided: true,
+      value: null,
+    } as const;
+  }
+
+  return {
+    isProvided: true,
+    value: normalizeProgressPercentage(value),
+  } as const;
+}
+
 function isProgressPercentageInRange(value: number) {
   return value >= 0 && value <= 100;
 }
@@ -131,15 +159,11 @@ export async function POST(request: Request) {
     return jsonError("currentLocation is too long.", 400);
   }
 
-  if (typeof progressPercentage !== "number" || Number.isNaN(progressPercentage)) {
-    return jsonError("progressPercentage must be a valid number.", 400);
-  }
+  const parsedProgressPercentage = parseOptionalProgressPercentage(progressPercentage);
 
-  if (!isProgressPercentageInRange(progressPercentage)) {
-    return jsonError("progressPercentage must be between 0 and 100.", 400);
+  if (parsedProgressPercentage.isProvided && parsedProgressPercentage.value === null) {
+    return jsonError("progressPercentage must be a valid number between 0 and 100.", 400);
   }
-
-  const normalizedProgressPercentage = normalizeProgressPercentage(progressPercentage);
 
   try {
     const supabase = await createClient();
@@ -167,25 +191,35 @@ export async function POST(request: Request) {
       return jsonError("Book not found.", 404);
     }
 
-    const { error: upsertError } = await supabase.from("reading_progress").upsert(
-      {
-        user_id: user.id,
-        book_id: normalizedBookId,
-        current_location: normalizedCurrentLocation,
-        progress_percentage: normalizedProgressPercentage,
-        updated_at: new Date().toISOString(),
-      },
-      {
+    const upsertPayload = {
+      user_id: user.id,
+      book_id: normalizedBookId,
+      current_location: normalizedCurrentLocation,
+      updated_at: new Date().toISOString(),
+      ...(typeof parsedProgressPercentage.value === "number"
+        ? { progress_percentage: parsedProgressPercentage.value }
+        : {}),
+    };
+
+    const { data: savedProgress, error: upsertError } = await supabase
+      .from("reading_progress")
+      .upsert(upsertPayload, {
         onConflict: "user_id,book_id",
-      },
-    );
+      })
+      .select("current_location, progress_percentage")
+      .maybeSingle();
 
     if (upsertError) {
       return jsonError("Could not save reading progress.", 500);
     }
 
     return NextResponse.json(
-      buildResponse(normalizedCurrentLocation, normalizedProgressPercentage),
+      buildResponse(
+        typeof savedProgress?.current_location === "string"
+          ? savedProgress.current_location
+          : normalizedCurrentLocation,
+        savedProgress?.progress_percentage,
+      ),
     );
   } catch (error) {
     console.error("/api/reading-progress POST unexpected error:", error);
