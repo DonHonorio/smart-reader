@@ -3,16 +3,13 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
-import type { CreditPack } from "@/types";
+import type { CreateCheckoutSessionResponse, CreditPack } from "@/types";
 
 type CreditPackCardProps = {
   pack: CreditPack;
 };
 
-type CheckoutResponse = {
-  url?: string;
-  error?: string;
-};
+const CHECKOUT_START_ERROR_MESSAGE = "Could not start checkout. Please try again.";
 
 export function CreditPackCard({ pack }: CreditPackCardProps) {
   const [isLoading, setIsLoading] = useState(false);
@@ -35,34 +32,26 @@ export function CreditPackCard({ pack }: CreditPackCardProps) {
         body: JSON.stringify({ packId: pack.id }),
       });
 
-      let payload: CheckoutResponse | null = null;
+      let payload: CreateCheckoutSessionResponse | null = null;
 
       try {
-        payload = (await response.json()) as CheckoutResponse;
+        payload = (await response.json()) as CreateCheckoutSessionResponse;
       } catch {
         payload = null;
       }
 
       if (!response.ok) {
-        throw new Error(
-          typeof payload?.error === "string" && payload.error
-            ? payload.error
-            : "Could not start checkout.",
-        );
+        throw new Error(CHECKOUT_START_ERROR_MESSAGE);
       }
 
-      if (typeof payload?.url !== "string" || !payload.url) {
-        throw new Error("Could not start checkout.");
+      if (!payload || !("url" in payload) || typeof payload.url !== "string" || !payload.url) {
+        throw new Error(CHECKOUT_START_ERROR_MESSAGE);
       }
 
       window.location.href = payload.url;
-    } catch (checkoutError) {
+    } catch {
       setIsLoading(false);
-      setError(
-        checkoutError instanceof Error && checkoutError.message
-          ? checkoutError.message
-          : "Could not start checkout.",
-      );
+      setError(CHECKOUT_START_ERROR_MESSAGE);
     }
   }
 

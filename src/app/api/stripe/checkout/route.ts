@@ -2,12 +2,11 @@ import { NextResponse } from "next/server";
 import { getCreditPackById } from "@/lib/billing";
 import { createClient } from "@/lib/supabase/server";
 import { stripe } from "@/lib/stripe";
+import type { CreateCheckoutSessionRequest } from "@/types";
 
 export const runtime = "nodejs";
 
-type CheckoutRequestBody = {
-  packId: string;
-};
+const CHECKOUT_GENERIC_ERROR = "Could not create checkout session.";
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status });
@@ -18,39 +17,6 @@ function normalizeText(value: string) {
 }
 
 export async function POST(request: Request) {
-  let body: unknown;
-
-  try {
-    body = await request.json();
-  } catch {
-    return jsonError("Invalid request body.", 400);
-  }
-
-  const { packId } = (body ?? {}) as Partial<CheckoutRequestBody>;
-
-  if (typeof packId !== "string") {
-    return jsonError("packId is required.", 400);
-  }
-
-  const normalizedPackId = normalizeText(packId);
-
-  if (!normalizedPackId) {
-    return jsonError("packId is required.", 400);
-  }
-
-  const pack = getCreditPackById(normalizedPackId);
-
-  if (!pack) {
-    return jsonError("Invalid packId.", 400);
-  }
-
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-
-  if (!appUrl) {
-    console.error("Missing NEXT_PUBLIC_APP_URL.");
-    return jsonError("Checkout service is temporarily unavailable.", 500);
-  }
-
   try {
     const supabase = await createClient();
     const {
@@ -60,6 +26,39 @@ export async function POST(request: Request) {
 
     if (authError || !user) {
       return jsonError("Authentication required.", 401);
+    }
+
+    let body: unknown;
+
+    try {
+      body = await request.json();
+    } catch {
+      return jsonError("Invalid request body.", 400);
+    }
+
+    const { packId } = (body ?? {}) as Partial<CreateCheckoutSessionRequest>;
+
+    if (typeof packId !== "string") {
+      return jsonError("packId is required.", 400);
+    }
+
+    const normalizedPackId = normalizeText(packId);
+
+    if (!normalizedPackId) {
+      return jsonError("packId is required.", 400);
+    }
+
+    const pack = getCreditPackById(normalizedPackId);
+
+    if (!pack) {
+      return jsonError("Invalid packId.", 400);
+    }
+
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+
+    if (!appUrl) {
+      console.error("Missing NEXT_PUBLIC_APP_URL.");
+      return jsonError(CHECKOUT_GENERIC_ERROR, 500);
     }
 
     const baseAppUrl = appUrl.replace(/\/$/, "");
@@ -89,12 +88,17 @@ export async function POST(request: Request) {
     });
 
     if (!session.url) {
-      return jsonError("Could not create checkout session.", 500);
+      console.error("/api/stripe/checkout session URL missing.", {
+        userId: user.id,
+        packId: pack.id,
+      });
+
+      return jsonError(CHECKOUT_GENERIC_ERROR, 500);
     }
 
     return NextResponse.json({ url: session.url });
   } catch (error) {
     console.error("/api/stripe/checkout unexpected error:", error);
-    return jsonError("Could not create checkout session.", 500);
+    return jsonError(CHECKOUT_GENERIC_ERROR, 500);
   }
 }

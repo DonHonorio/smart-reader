@@ -1,6 +1,6 @@
 import type { CreditPack } from "@/types";
 
-export const CREDIT_PACKS: CreditPack[] = [
+export const CREDIT_PACKS: ReadonlyArray<CreditPack> = [
   {
     id: "single_credit",
     name: "Single Credit",

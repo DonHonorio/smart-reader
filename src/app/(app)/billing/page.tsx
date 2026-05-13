@@ -2,6 +2,7 @@ import { CreditBalanceCard } from "@/components/billing/CreditBalanceCard";
 import { CreditPackCard } from "@/components/billing/CreditPackCard";
 import { CREDIT_PACKS } from "@/lib/billing";
 import { getUserCredits } from "@/lib/credits";
+import type { CheckoutStatus } from "@/types";
 
 type BillingPageProps = {
   searchParams: Promise<{
@@ -11,7 +12,10 @@ type BillingPageProps = {
 
 export default async function BillingPage({ searchParams }: BillingPageProps) {
   const params = await searchParams;
-  const checkoutStatus = typeof params.checkout === "string" ? params.checkout : undefined;
+  const checkoutStatus: CheckoutStatus | undefined =
+    params.checkout === "success" || params.checkout === "cancelled"
+      ? params.checkout
+      : undefined;
   const creditsBalance = (await getUserCredits()) ?? 0;
 
   return (

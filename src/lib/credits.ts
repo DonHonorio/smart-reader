@@ -182,6 +182,7 @@ export async function addPurchasedCredits({
   const normalizedUserId = userId.trim();
   const normalizedReason = reason.trim();
   const normalizedStripeSessionId = stripeSessionId.trim();
+  const logContext = `(userId=${normalizedUserId}, stripeSessionId=${normalizedStripeSessionId})`;
 
   if (!normalizedUserId || !normalizedReason || !normalizedStripeSessionId) {
     return {
@@ -206,7 +207,10 @@ export async function addPurchasedCredits({
     .limit(1);
 
   if (existingTransactionError) {
-    logSupabaseError("addPurchasedCredits duplicate check error:", existingTransactionError);
+    logSupabaseError(
+      `addPurchasedCredits duplicate check error ${logContext}:`,
+      existingTransactionError,
+    );
 
     return {
       success: false,
@@ -223,7 +227,7 @@ export async function addPurchasedCredits({
 
     if (currentCreditsError) {
       logSupabaseError(
-        "addPurchasedCredits read balance for duplicate session error:",
+        `addPurchasedCredits read balance for duplicate session error ${logContext}:`,
         currentCreditsError,
       );
 
@@ -247,7 +251,10 @@ export async function addPurchasedCredits({
     .maybeSingle();
 
   if (existingCreditsError) {
-    logSupabaseError("addPurchasedCredits current balance query error:", existingCreditsError);
+    logSupabaseError(
+      `addPurchasedCredits current balance query error ${logContext}:`,
+      existingCreditsError,
+    );
 
     return {
       success: false,
@@ -269,7 +276,10 @@ export async function addPurchasedCredits({
         .maybeSingle();
 
       if (fallbackCreditsError || !fallbackCreditsRow) {
-        logSupabaseError("addPurchasedCredits ensure user_credits error:", insertCreditsError);
+        logSupabaseError(
+          `addPurchasedCredits ensure user_credits error ${logContext}:`,
+          insertCreditsError,
+        );
 
         return {
           success: false,
@@ -291,7 +301,10 @@ export async function addPurchasedCredits({
       .maybeSingle();
 
     if (currentBalanceError || !currentBalanceRow) {
-      logSupabaseError("addPurchasedCredits read balance before update error:", currentBalanceError);
+      logSupabaseError(
+        `addPurchasedCredits read balance before update error ${logContext}:`,
+        currentBalanceError,
+      );
 
       return {
         success: false,
@@ -318,7 +331,10 @@ export async function addPurchasedCredits({
     }
 
     if (updateCreditsError) {
-      logSupabaseError("addPurchasedCredits optimistic update error:", updateCreditsError);
+      logSupabaseError(
+        `addPurchasedCredits optimistic update error ${logContext}:`,
+        updateCreditsError,
+      );
     }
   }
 
@@ -339,7 +355,10 @@ export async function addPurchasedCredits({
   });
 
   if (insertTransactionError) {
-    logSupabaseError("addPurchasedCredits transaction insert error:", insertTransactionError);
+    logSupabaseError(
+      `addPurchasedCredits transaction insert error ${logContext}:`,
+      insertTransactionError,
+    );
 
     const { error: rollbackError } = await supabase
       .from("user_credits")
@@ -348,14 +367,27 @@ export async function addPurchasedCredits({
       .eq("balance", updatedBalance);
 
     if (rollbackError) {
-      logSupabaseError("addPurchasedCredits rollback error:", rollbackError);
+      logSupabaseError(`addPurchasedCredits rollback error ${logContext}:`, rollbackError);
     }
 
     if (isDuplicateKeyError(insertTransactionError)) {
+      const { data: latestCreditsRow, error: latestCreditsError } = await supabase
+        .from("user_credits")
+        .select("balance")
+        .eq("user_id", normalizedUserId)
+        .maybeSingle();
+
+      if (latestCreditsError) {
+        logSupabaseError(
+          `addPurchasedCredits read latest balance for duplicate session error ${logContext}:`,
+          latestCreditsError,
+        );
+      }
+
       return {
         success: true,
         alreadyProcessed: true,
-        balance: previousBalance,
+        balance: normalizeBalance(latestCreditsRow?.balance ?? previousBalance),
       };
     }
 

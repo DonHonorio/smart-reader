@@ -59,6 +59,20 @@ export type CreditPack = {
   badge?: string;
 };
 
+export type CreateCheckoutSessionRequest = {
+  packId: string;
+};
+
+export type CreateCheckoutSessionResponse =
+  | {
+      url: string;
+    }
+  | {
+      error: string;
+    };
+
+export type CheckoutStatus = "success" | "cancelled";
+
 export type EpubReaderProps = {
   fileUrl: string;
   bookId: string;

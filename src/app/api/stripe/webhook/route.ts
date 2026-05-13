@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
+import type Stripe from "stripe";
 import { getCreditPackById } from "@/lib/billing";
 import { addPurchasedCredits } from "@/lib/credits";
 import { stripe } from "@/lib/stripe";
 
 export const runtime = "nodejs";
+
+const WEBHOOK_SIGNATURE_ERROR = "Invalid Stripe signature.";
+const WEBHOOK_GENERIC_ERROR = "Could not process Stripe webhook.";
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status });
@@ -18,30 +22,30 @@ export async function POST(request: Request) {
 
   if (!webhookSecret) {
     console.error("Missing STRIPE_WEBHOOK_SECRET.");
-    return jsonError("Webhook service is not configured.", 500);
+    return jsonError(WEBHOOK_GENERIC_ERROR, 500);
   }
 
   const rawBody = await request.text();
   const signature = request.headers.get("stripe-signature");
 
   if (!signature) {
-    return jsonError("Missing stripe-signature header.", 400);
+    return jsonError(WEBHOOK_SIGNATURE_ERROR, 400);
   }
 
-  let event: ReturnType<typeof stripe.webhooks.constructEvent>;
+  let event: Stripe.Event;
 
   try {
     event = stripe.webhooks.constructEvent(rawBody, signature, webhookSecret);
   } catch (error) {
     console.error("/api/stripe/webhook signature verification error:", error);
-    return jsonError("Invalid Stripe signature.", 400);
+    return jsonError(WEBHOOK_SIGNATURE_ERROR, 400);
   }
 
   if (event.type !== "checkout.session.completed") {
     return NextResponse.json({ received: true });
   }
 
-  const session = event.data.object;
+  const session = event.data.object as Stripe.Checkout.Session;
   const metadata = session.metadata ?? {};
 
   const userId = normalizeText(metadata.userId ?? "");
@@ -53,7 +57,7 @@ export async function POST(request: Request) {
       metadata,
     });
 
-    return jsonError("Invalid checkout metadata.", 400);
+    return NextResponse.json({ received: true, ignored: true });
   }
 
   const pack = getCreditPackById(packId);
@@ -64,7 +68,7 @@ export async function POST(request: Request) {
       packId,
     });
 
-    return jsonError("Invalid checkout metadata.", 400);
+    return NextResponse.json({ received: true, ignored: true });
   }
 
   const result = await addPurchasedCredits({
@@ -75,7 +79,13 @@ export async function POST(request: Request) {
   });
 
   if (!result.success) {
-    return jsonError(result.error, 500);
+    console.error("/api/stripe/webhook addPurchasedCredits error:", {
+      sessionId: session.id,
+      userId,
+      packId,
+    });
+
+    return jsonError(WEBHOOK_GENERIC_ERROR, 500);
   }
 
   return NextResponse.json({
