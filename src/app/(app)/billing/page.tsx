@@ -1,7 +1,8 @@
 import { CreditBalanceCard } from "@/components/billing/CreditBalanceCard";
 import { CreditPackCard } from "@/components/billing/CreditPackCard";
+import { CreditTransactionList } from "@/components/billing/CreditTransactionList";
 import { CREDIT_PACKS } from "@/lib/billing";
-import { getUserCredits } from "@/lib/credits";
+import { getUserCreditTransactions, getUserCredits } from "@/lib/credits";
 import type { CheckoutStatus } from "@/types";
 
 type BillingPageProps = {
@@ -16,7 +17,11 @@ export default async function BillingPage({ searchParams }: BillingPageProps) {
     params.checkout === "success" || params.checkout === "cancelled"
       ? params.checkout
       : undefined;
-  const creditsBalance = (await getUserCredits()) ?? 0;
+  const [creditsBalance, transactions] = await Promise.all([
+    getUserCredits(),
+    getUserCreditTransactions(),
+  ]);
+  const normalizedCreditsBalance = creditsBalance ?? 0;
 
   return (
     <section className="mx-auto w-full max-w-6xl space-y-6">
@@ -39,13 +44,15 @@ export default async function BillingPage({ searchParams }: BillingPageProps) {
         </p>
       )}
 
-      <CreditBalanceCard balance={creditsBalance} />
+      <CreditBalanceCard balance={normalizedCreditsBalance} />
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         {CREDIT_PACKS.map((pack) => (
           <CreditPackCard key={pack.id} pack={pack} />
         ))}
       </div>
+
+      <CreditTransactionList transactions={transactions} />
 
       <p className="text-sm text-slate-600">Credits do not expire during the MVP.</p>
     </section>

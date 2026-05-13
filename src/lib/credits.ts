@@ -1,6 +1,7 @@
 import { unstable_noStore as noStore } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import type { CreditTransaction } from "@/types";
 
 const SIGNUP_BONUS_AMOUNT = 1;
 const BOOK_UPLOAD_COST = 1;
@@ -169,6 +170,39 @@ export async function getUserCredits(): Promise<number | null> {
 
 export async function ensureUserCredits(): Promise<number | null> {
   return getUserCredits();
+}
+
+export async function getUserCreditTransactions(): Promise<CreditTransaction[]> {
+  noStore();
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError) {
+    console.error("getUserCreditTransactions auth error:", authError.message);
+    return [];
+  }
+
+  if (!user) {
+    return [];
+  }
+
+  const { data: transactions, error: transactionError } = await supabase
+    .from("credit_transactions")
+    .select("id, user_id, type, amount, reason, book_id, stripe_session_id, created_at")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  if (transactionError) {
+    console.error("getUserCreditTransactions query error:", transactionError.message);
+    return [];
+  }
+
+  return (transactions ?? []) as CreditTransaction[];
 }
 
 export async function addPurchasedCredits({
