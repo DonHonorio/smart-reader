@@ -1,16 +1,75 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import ePub, { type Book as EpubBook, type Contents as EpubContents, type Rendition } from "epubjs";
-import { Button } from "@/components/ui/Button";
+import { ReaderControls } from "@/components/reader/ReaderControls";
+import { ReaderSettingsPanel } from "@/components/reader/ReaderSettingsPanel";
+import { ReaderTopBar } from "@/components/reader/ReaderTopBar";
 import { SelectionPanel } from "@/components/reader/SelectionPanel";
+import { ROUTES } from "@/lib/constants";
 import { extractContextSentenceFromSelection } from "@/lib/text";
-import type { EpubReaderProps, UpsertReadingProgressRequest } from "@/types";
+import { cn } from "@/lib/utils";
+import type {
+  EpubReaderProps,
+  ReaderPreferences,
+  ReaderTheme,
+  UpsertReadingProgressRequest,
+} from "@/types";
 
 const SAVE_PROGRESS_DEBOUNCE_MS = 800;
 const LOCATIONS_GENERATE_CHARS = 1000;
 const LOCATIONS_CACHE_VERSION = "v3";
 const LOCATIONS_CACHE_KEY_PREFIX = "smart-reader:locations:";
+
+const READER_PREFERENCES_STORAGE_KEY = "smart-reader:reader-preferences:v1";
+const DEFAULT_READER_THEME: ReaderTheme = "light";
+const DEFAULT_READER_FONT_SIZE = 100;
+const MIN_READER_FONT_SIZE = 80;
+const MAX_READER_FONT_SIZE = 150;
+const READER_FONT_SIZE_STEP = 10;
+const DESKTOP_SPREAD_BREAKPOINT = 1024;
+const DESKTOP_SINGLE_CLICK_DELAY_MS = 220;
+const INITIAL_RESTORE_PROGRESS_DELTA_THRESHOLD = 0.4;
+
+const EPUB_THEME_NAMES: Record<ReaderTheme, string> = {
+  light: "smart-reader-light",
+  sepia: "smart-reader-sepia",
+  dark: "smart-reader-dark",
+};
+
+const READER_THEME_PALETTE: Record<
+  ReaderTheme,
+  {
+    appBackground: string;
+    appText: string;
+    epubBackground: string;
+    epubText: string;
+    loadingOverlay: string;
+  }
+> = {
+  light: {
+    appBackground: "#fffaf5",
+    appText: "#111827",
+    epubBackground: "#fffaf5",
+    epubText: "#111827",
+    loadingOverlay: "rgba(255, 250, 245, 0.92)",
+  },
+  sepia: {
+    appBackground: "#f4ecd8",
+    appText: "#2f261d",
+    epubBackground: "#f4ecd8",
+    epubText: "#2f261d",
+    loadingOverlay: "rgba(244, 236, 216, 0.92)",
+  },
+  dark: {
+    appBackground: "#181818",
+    appText: "#e5e7eb",
+    epubBackground: "#181818",
+    epubText: "#e5e7eb",
+    loadingOverlay: "rgba(24, 24, 24, 0.9)",
+  },
+};
 
 type RelocatedPayload = {
   percentage?: unknown;
@@ -35,8 +94,26 @@ type RelocatedPayload = {
 type EpubLocations = {
   generate: (chars?: number) => Promise<unknown>;
   percentageFromCfi: (cfi: string) => unknown;
+  cfiFromPercentage?: (percentage: number) => unknown;
   load?: (locations: unknown) => unknown;
   save?: () => unknown;
+};
+
+type RenditionThemesApi = {
+  register: (name: string, rules: Record<string, Record<string, string>>) => unknown;
+  select: (name: string) => unknown;
+  fontSize: (size: string) => unknown;
+};
+
+type RenditionEventHandler = (...args: unknown[]) => void;
+
+type RenditionEventApi = {
+  on: (eventName: string, handler: RenditionEventHandler) => unknown;
+  off: (eventName: string, handler: RenditionEventHandler) => unknown;
+};
+
+type RenditionSpreadApi = {
+  spread?: (value: "none" | "auto" | "always") => unknown;
 };
 
 function getLocationsCacheKey(bookId: string) {
@@ -140,7 +217,13 @@ function getDisplayedPagePercentage(displayed: { page?: unknown; total?: unknown
 
   const { page, total } = displayed;
 
-  if (typeof page !== "number" || typeof total !== "number" || !Number.isFinite(page) || !Number.isFinite(total) || total <= 0) {
+  if (
+    typeof page !== "number" ||
+    typeof total !== "number" ||
+    !Number.isFinite(page) ||
+    !Number.isFinite(total) ||
+    total <= 0
+  ) {
     return null;
   }
 
@@ -209,6 +292,18 @@ function normalizeCfi(value: unknown): string | null {
   return normalized || null;
 }
 
+function sanitizeCfiForDisplay(value: string) {
+  const normalized = normalizeCfi(value);
+
+  if (!normalized) {
+    return null;
+  }
+
+  // Strip ID assertions that can become unstable across spine/chapter reflows.
+  const sanitized = normalized.replace(/\[[^\]]*\]/g, "");
+  return sanitized || null;
+}
+
 function getRelocatedStartCfi(payload: RelocatedPayload) {
   return normalizeCfi(payload.start?.cfi);
 }
@@ -217,7 +312,18 @@ function getRelocatedEndCfi(payload: RelocatedPayload) {
   return normalizeCfi(payload.end?.cfi);
 }
 
-function getCurrentRenditionCfi(rendition: Rendition | null) {
+function getPreferredRelocatedCfi(payload: RelocatedPayload, preferEnd: boolean) {
+  const startCfi = getRelocatedStartCfi(payload);
+  const endCfi = getRelocatedEndCfi(payload);
+
+  if (preferEnd && endCfi) {
+    return endCfi;
+  }
+
+  return startCfi ?? endCfi;
+}
+
+function getCurrentRenditionLocationPayload(rendition: Rendition | null) {
   if (!rendition) {
     return null;
   }
@@ -232,7 +338,22 @@ function getCurrentRenditionCfi(rendition: Rendition | null) {
     return null;
   }
 
-  const currentLocation = getCurrentLocation() as RelocatedPayload | null;
+  try {
+    const location = getCurrentLocation() as RelocatedPayload | null;
+
+    if (!location || typeof location !== "object") {
+      return null;
+    }
+
+    return location;
+  } catch {
+    // Epub.js can throw while internals are being torn down; treat as no location.
+    return null;
+  }
+}
+
+function getCurrentRenditionCfi(rendition: Rendition | null) {
+  const currentLocation = getCurrentRenditionLocationPayload(rendition);
 
   if (!currentLocation) {
     return null;
@@ -253,27 +374,352 @@ function getLoadErrorMessage(status: number) {
   return "Could not load this EPUB file right now. Please try again from Library.";
 }
 
+function isReaderTheme(value: unknown): value is ReaderTheme {
+  return value === "light" || value === "sepia" || value === "dark";
+}
+
+function normalizeReaderFontSize(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_READER_FONT_SIZE;
+  }
+
+  const bounded = Math.max(MIN_READER_FONT_SIZE, Math.min(MAX_READER_FONT_SIZE, value));
+  const rounded = Math.round(bounded / READER_FONT_SIZE_STEP) * READER_FONT_SIZE_STEP;
+
+  return Math.max(MIN_READER_FONT_SIZE, Math.min(MAX_READER_FONT_SIZE, rounded));
+}
+
+function readReaderPreferences() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const serialized = window.localStorage.getItem(READER_PREFERENCES_STORAGE_KEY);
+
+    if (!serialized) {
+      return null;
+    }
+
+    const parsed = JSON.parse(serialized) as Partial<ReaderPreferences>;
+    const theme = isReaderTheme(parsed.theme) ? parsed.theme : DEFAULT_READER_THEME;
+
+    return {
+      theme,
+      fontSize: normalizeReaderFontSize(parsed.fontSize),
+    } as ReaderPreferences;
+  } catch {
+    return null;
+  }
+}
+
+function persistReaderPreferences(preferences: ReaderPreferences) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(READER_PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
+  } catch {
+    // Ignore preference write failures without interrupting reading.
+  }
+}
+
+function scheduleMicrotask(task: () => void) {
+  if (typeof queueMicrotask === "function") {
+    queueMicrotask(task);
+    return;
+  }
+
+  Promise.resolve().then(task);
+}
+
+function getRenditionThemes(rendition: Rendition | null) {
+  if (!rendition) {
+    return null;
+  }
+
+  const themes = (rendition as unknown as { themes?: Partial<RenditionThemesApi> }).themes;
+
+  if (
+    !themes ||
+    typeof themes.register !== "function" ||
+    typeof themes.select !== "function" ||
+    typeof themes.fontSize !== "function"
+  ) {
+    return null;
+  }
+
+  return themes as RenditionThemesApi;
+}
+
+function getRenditionEvents(rendition: Rendition) {
+  return rendition as unknown as RenditionEventApi;
+}
+
+function getThemeRules(theme: ReaderTheme) {
+  const palette = READER_THEME_PALETTE[theme];
+  const themeClass = EPUB_THEME_NAMES[theme];
+  const rules: Record<string, Record<string, string>> = {};
+
+  rules["body." + themeClass + ", ." + themeClass + " body, ." + themeClass] = {
+      "background-color": palette.epubBackground,
+      color: palette.epubText,
+      "font-family": "Georgia, serif",
+      "line-height": "1.65",
+      margin: "0 auto",
+      padding: "0 1rem",
+      "max-width": "44rem",
+      "text-rendering": "optimizeLegibility",
+    };
+
+  rules["body." + themeClass + " p, ." + themeClass + " p"] = {
+      "line-height": "1.65",
+      margin: "0.65em 0",
+    };
+
+  rules[
+    "body." + themeClass + " blockquote, body." + themeClass + " li, ." + themeClass + " blockquote, ." + themeClass + " li"
+  ] = {
+      "line-height": "1.65",
+    };
+
+  rules[
+    "body." + themeClass + " h1, body." + themeClass + " h2, body." + themeClass + " h3, body." + themeClass + " h4, body." + themeClass + " h5, body." + themeClass + " h6, ." + themeClass + " h1, ." + themeClass + " h2, ." + themeClass + " h3, ." + themeClass + " h4, ." + themeClass + " h5, ." + themeClass + " h6"
+  ] = {
+      color: palette.epubText,
+      "line-height": "1.3",
+    };
+
+  rules[
+    "body." + themeClass + " a, body." + themeClass + " a:link, body." + themeClass + " a:visited, ." + themeClass + " a, ." + themeClass + " a:link, ." + themeClass + " a:visited"
+  ] = {
+      color: palette.epubText,
+    };
+
+  return rules;
+}
+
+function registerReaderThemes(rendition: Rendition) {
+  const themes = getRenditionThemes(rendition);
+
+  if (!themes) {
+    return;
+  }
+
+  themes.register(EPUB_THEME_NAMES.light, getThemeRules("light"));
+  themes.register(EPUB_THEME_NAMES.sepia, getThemeRules("sepia"));
+  themes.register(EPUB_THEME_NAMES.dark, getThemeRules("dark"));
+}
+
+function applyReaderAppearance(rendition: Rendition | null, theme: ReaderTheme, fontSize: number) {
+  const themes = getRenditionThemes(rendition);
+
+  if (!themes) {
+    return;
+  }
+
+  themes.select(EPUB_THEME_NAMES[theme]);
+  themes.fontSize(`${fontSize}%`);
+}
+
+function applySpreadForViewport(rendition: Rendition | null, isMobileViewport: boolean) {
+  if (!rendition) {
+    return;
+  }
+
+  const spread = (rendition as RenditionSpreadApi).spread;
+
+  if (typeof spread !== "function") {
+    return;
+  }
+
+  try {
+    spread(isMobileViewport ? "none" : "always");
+  } catch {
+    // TODO: if a specific EPUB breaks with spread=always, keep single-page mode until per-book handling exists.
+    try {
+      spread("none");
+    } catch {
+      // Ignore spread failures and keep reader usable.
+    }
+  }
+}
+
+function getContainerDimensions(container: HTMLDivElement | null) {
+  if (!container) {
+    return null;
+  }
+
+  const width = container.clientWidth;
+  const height = container.clientHeight;
+
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+
+  return { width, height };
+}
+
 export function EpubReader({
   fileUrl,
   bookId,
+  bookTitle,
+  bookAuthor,
   sourceLanguage,
   targetLanguage,
   initialLocation,
+  initialProgressPercentage,
 }: EpubReaderProps) {
+  const router = useRouter();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const bookRef = useRef<EpubBook | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
   const selectedContentsRef = useRef<EpubContents | null>(null);
   const saveProgressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingDesktopClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestRestoreLocationRef = useRef<string | null>(null);
+  const latestProgressPercentageRef = useRef<number | null>(null);
   const lastSavedLocationRef = useRef<string | null>(null);
   const lastSavedProgressRef = useRef<number | null>(null);
+  const hasUserNavigatedRef = useRef(false);
   const locationsReadyRef = useRef(false);
   const isRenditionReadyRef = useRef(false);
+  const hasHydratedPreferencesRef = useRef(false);
+  const selectedTextRef = useRef("");
+  const isSettingsOpenRef = useRef(false);
+  const isTouchLikeDeviceRef = useRef(false);
+  const themeRef = useRef<ReaderTheme>(DEFAULT_READER_THEME);
+  const fontSizeRef = useRef(DEFAULT_READER_FONT_SIZE);
+  const isMobileViewportRef = useRef(true);
+
   const [isLoading, setIsLoading] = useState(true);
   const [isReady, setIsReady] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [selectedText, setSelectedText] = useState("");
   const [contextSentence, setContextSentence] = useState<string | null>(null);
+  const [progressPercentage, setProgressPercentage] = useState<number | null>(null);
+  const [isChromeVisible, setIsChromeVisible] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [theme, setTheme] = useState<ReaderTheme>(DEFAULT_READER_THEME);
+  const [fontSize, setFontSize] = useState(DEFAULT_READER_FONT_SIZE);
+  const [isMobileViewport, setIsMobileViewport] = useState(() => {
+    if (typeof window === "undefined") {
+      return true;
+    }
+
+    return window.innerWidth < DESKTOP_SPREAD_BREAKPOINT;
+  });
+
+  const themePalette = useMemo(() => READER_THEME_PALETTE[theme], [theme]);
+  const isReaderUiVisible = isChromeVisible || isSettingsOpen;
+
+  useEffect(() => {
+    selectedTextRef.current = selectedText;
+  }, [selectedText]);
+
+  useEffect(() => {
+    isSettingsOpenRef.current = isSettingsOpen;
+  }, [isSettingsOpen]);
+
+  useEffect(() => {
+    themeRef.current = theme;
+  }, [theme]);
+
+  useEffect(() => {
+    fontSizeRef.current = fontSize;
+  }, [fontSize]);
+
+  useEffect(() => {
+    isMobileViewportRef.current = isMobileViewport;
+  }, [isMobileViewport]);
+
+  useEffect(() => {
+    let isCancelled = false;
+    const savedPreferences = readReaderPreferences();
+
+    scheduleMicrotask(() => {
+      if (isCancelled) {
+        return;
+      }
+
+      if (savedPreferences) {
+        setTheme(savedPreferences.theme);
+        setFontSize(savedPreferences.fontSize);
+      }
+
+      hasHydratedPreferencesRef.current = true;
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydratedPreferencesRef.current) {
+      return;
+    }
+
+    persistReaderPreferences({ theme, fontSize });
+  }, [theme, fontSize]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const hasCoarsePointer = typeof window.matchMedia === "function"
+      ? window.matchMedia("(pointer: coarse)").matches
+      : false;
+    const hasTouchPoints = typeof navigator !== "undefined" && navigator.maxTouchPoints > 0;
+    const hasTouchEvent = "ontouchstart" in window;
+
+    isTouchLikeDeviceRef.current = hasCoarsePointer || hasTouchPoints || hasTouchEvent;
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const updateViewportMode = () => {
+      setIsMobileViewport(window.innerWidth < DESKTOP_SPREAD_BREAKPOINT);
+    };
+
+    updateViewportMode();
+    window.addEventListener("resize", updateViewportMode);
+
+    return () => {
+      window.removeEventListener("resize", updateViewportMode);
+    };
+  }, []);
+
+  useEffect(() => {
+    applyReaderAppearance(renditionRef.current, theme, fontSize);
+  }, [theme, fontSize]);
+
+  useEffect(() => {
+    const rendition = renditionRef.current;
+
+    if (!rendition) {
+      return;
+    }
+
+    applySpreadForViewport(rendition, isMobileViewport);
+
+    const dimensions = getContainerDimensions(containerRef.current);
+
+    if (!dimensions) {
+      return;
+    }
+
+    try {
+      rendition.resize(dimensions.width, dimensions.height);
+    } catch {
+      // Ignore transient resize race conditions while epub.js is settling.
+    }
+  }, [isMobileViewport]);
 
   const clearSelection = useCallback(() => {
     const nativeSelection = selectedContentsRef.current?.window.getSelection();
@@ -282,13 +728,58 @@ export function EpubReader({
     setContextSentence(null);
   }, []);
 
+  const clearPendingDesktopClickToggle = useCallback(() => {
+    if (pendingDesktopClickTimerRef.current) {
+      clearTimeout(pendingDesktopClickTimerRef.current);
+      pendingDesktopClickTimerRef.current = null;
+    }
+  }, []);
+
+  const toggleReaderUi = useCallback(() => {
+    setIsChromeVisible((isVisible) => {
+      const nextVisibility = !isVisible;
+
+      if (!nextVisibility) {
+        setIsSettingsOpen(false);
+      }
+
+      return nextVisibility;
+    });
+  }, []);
+
+  const openSettings = useCallback(() => {
+    setIsChromeVisible(true);
+    setIsSettingsOpen(true);
+  }, []);
+
+  const closeSettings = useCallback(() => {
+    setIsSettingsOpen(false);
+  }, []);
+
+  const increaseFontSize = useCallback(() => {
+    setFontSize((current) =>
+      Math.min(MAX_READER_FONT_SIZE, current + READER_FONT_SIZE_STEP),
+    );
+  }, []);
+
+  const decreaseFontSize = useCallback(() => {
+    setFontSize((current) =>
+      Math.max(MIN_READER_FONT_SIZE, current - READER_FONT_SIZE_STEP),
+    );
+  }, []);
+
+  const navigateBackToLibrary = useCallback(() => {
+    router.push(ROUTES.library);
+  }, [router]);
+
   useEffect(() => {
     let isCancelled = false;
     const abortController = new AbortController();
     let resizeObserver: ResizeObserver | null = null;
     let resizeRendition: (() => void) | null = null;
-    let selectionHandler: ((cfiRange: string, contents: EpubContents) => void) | null = null;
-    let relocatedHandler: ((location: unknown) => void) | null = null;
+    let selectionHandler: RenditionEventHandler | null = null;
+    let relocatedHandler: RenditionEventHandler | null = null;
+    let clickHandler: RenditionEventHandler | null = null;
     const container = containerRef.current;
 
     if (!container) {
@@ -301,20 +792,117 @@ export function EpubReader({
     isRenditionReadyRef.current = false;
     locationsReadyRef.current = false;
     selectedContentsRef.current = null;
+    clearPendingDesktopClickToggle();
     if (saveProgressTimerRef.current) {
       clearTimeout(saveProgressTimerRef.current);
       saveProgressTimerRef.current = null;
     }
     lastSavedLocationRef.current = initialLocation ?? null;
     lastSavedProgressRef.current = null;
+    hasUserNavigatedRef.current = false;
     setIsLoading(true);
     setIsReady(false);
     setErrorMessage(null);
     setSelectedText("");
     setContextSentence(null);
+    setProgressPercentage(null);
+    setIsSettingsOpen(false);
+    setIsChromeVisible(false);
+    latestRestoreLocationRef.current = initialLocation ?? null;
+    latestProgressPercentageRef.current = null;
+
+    const captureLatestLocationSnapshot = () => {
+      const currentLocationPayload = getCurrentRenditionLocationPayload(renditionRef.current);
+
+      if (!currentLocationPayload) {
+        return;
+      }
+
+      const shouldPreferEndCfi = !isMobileViewportRef.current;
+      const restoreLocationCfi = getPreferredRelocatedCfi(
+        currentLocationPayload,
+        shouldPreferEndCfi,
+      );
+
+      if (!restoreLocationCfi) {
+        return;
+      }
+
+      const fallbackProgressPercentage = getRelocatedFallbackProgress(currentLocationPayload);
+      const { progressPercentage: recalculatedProgressPercentage } = getProgressFromCfi(
+        bookRef.current,
+        restoreLocationCfi,
+        locationsReadyRef.current,
+        fallbackProgressPercentage ?? latestProgressPercentageRef.current,
+      );
+
+      if (typeof recalculatedProgressPercentage === "number") {
+        latestProgressPercentageRef.current = recalculatedProgressPercentage;
+      }
+
+      latestRestoreLocationRef.current = restoreLocationCfi;
+    };
+
+    const flushLatestProgress = (useKeepalive: boolean) => {
+      if (!hasUserNavigatedRef.current) {
+        return;
+      }
+
+      const restoreLocationCfi = latestRestoreLocationRef.current;
+
+      if (!restoreLocationCfi) {
+        return;
+      }
+
+      const nextProgressPercentage = latestProgressPercentageRef.current;
+      const isSameLocation = lastSavedLocationRef.current === restoreLocationCfi;
+      const hasProgressUpdate =
+        typeof nextProgressPercentage === "number" &&
+        (typeof lastSavedProgressRef.current !== "number" ||
+          Math.abs(lastSavedProgressRef.current - nextProgressPercentage) >= 0.01);
+
+      if (isSameLocation && !hasProgressUpdate) {
+        return;
+      }
+
+      const body: UpsertReadingProgressRequest = {
+        bookId,
+        currentLocation: restoreLocationCfi,
+        ...(typeof nextProgressPercentage === "number"
+          ? { progressPercentage: nextProgressPercentage }
+          : {}),
+      };
+
+      try {
+        void fetch("/api/reading-progress", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+          ...(useKeepalive ? { keepalive: true } : {}),
+        });
+
+        lastSavedLocationRef.current = restoreLocationCfi;
+        if (typeof nextProgressPercentage === "number") {
+          lastSavedProgressRef.current = nextProgressPercentage;
+        }
+      } catch {
+        // Ignore best-effort flush errors on navigation/unload.
+      }
+    };
+
+    const handlePageHide = () => {
+      captureLatestLocationSnapshot();
+      flushLatestProgress(true);
+    };
+
+    window.addEventListener("pagehide", handlePageHide);
 
     async function mountReader() {
       try {
+        let hasAttemptedInitialRestoreCorrection = false;
+
         const response = await fetch(fileUrl, {
           method: "GET",
           signal: abortController.signal,
@@ -341,14 +929,18 @@ export function EpubReader({
           width: "100%",
           height: "100%",
           flow: "paginated",
-          spread: "none",
+          spread: isMobileViewportRef.current ? "none" : "always",
         });
+
+        registerReaderThemes(rendition);
+        applyReaderAppearance(rendition, themeRef.current, fontSizeRef.current);
+        applySpreadForViewport(rendition, isMobileViewportRef.current);
 
         bookRef.current = book;
         renditionRef.current = rendition;
 
         const saveProgressForCfi = (
-          currentLocationCfi: string,
+          restoreLocationCfi: string,
           progressCfi?: string | null,
           fallbackProgressPercentage: number | null = null,
         ) => {
@@ -356,19 +948,41 @@ export function EpubReader({
             return;
           }
 
-          const effectiveProgressCfi = progressCfi ?? currentLocationCfi;
+          const effectiveProgressCfi = progressCfi ?? restoreLocationCfi;
 
-          const { percentage, progressPercentage } = getProgressFromCfi(
+          const { percentage, progressPercentage: nextProgressPercentage } = getProgressFromCfi(
             bookRef.current,
             effectiveProgressCfi,
             locationsReadyRef.current,
             fallbackProgressPercentage,
           );
-          const isSameLocation = lastSavedLocationRef.current === currentLocationCfi;
+
+          latestRestoreLocationRef.current = restoreLocationCfi;
+          latestProgressPercentageRef.current =
+            typeof nextProgressPercentage === "number" ? nextProgressPercentage : null;
+
+          if (typeof nextProgressPercentage === "number") {
+            setProgressPercentage((current) => {
+              if (
+                typeof current === "number" &&
+                Math.abs(current - nextProgressPercentage) < 0.05
+              ) {
+                return current;
+              }
+
+              return nextProgressPercentage;
+            });
+          }
+
+          if (!hasUserNavigatedRef.current) {
+            return;
+          }
+
+          const isSameLocation = lastSavedLocationRef.current === restoreLocationCfi;
           const hasProgressUpdate =
-            typeof progressPercentage === "number" &&
+            typeof nextProgressPercentage === "number" &&
             (typeof lastSavedProgressRef.current !== "number" ||
-              Math.abs(lastSavedProgressRef.current - progressPercentage) >= 0.01);
+              Math.abs(lastSavedProgressRef.current - nextProgressPercentage) >= 0.01);
 
           if (isSameLocation && !hasProgressUpdate) {
             return;
@@ -386,36 +1000,37 @@ export function EpubReader({
             try {
               const body: UpsertReadingProgressRequest = {
                 bookId,
-                currentLocation: currentLocationCfi,
-                ...(typeof progressPercentage === "number" ? { progressPercentage } : {}),
+                currentLocation: restoreLocationCfi,
+                ...(typeof nextProgressPercentage === "number"
+                  ? { progressPercentage: nextProgressPercentage }
+                  : {}),
               };
 
               if (process.env.NODE_ENV !== "production") {
                 console.log("Reading progress", {
-                  currentLocationCfi,
+                  restoreLocationCfi,
                   progressCfi: effectiveProgressCfi,
                   percentage,
-                  progressPercentage,
+                  progressPercentage: nextProgressPercentage,
                   locationsReady: locationsReadyRef.current,
                 });
               }
 
-              const response = await fetch("/api/reading-progress", {
+              const progressResponse = await fetch("/api/reading-progress", {
                 method: "POST",
                 headers: {
                   "Content-Type": "application/json",
                 },
                 body: JSON.stringify(body),
-                signal: abortController.signal,
               });
 
-              if (!response.ok) {
+              if (!progressResponse.ok) {
                 return;
               }
 
-              lastSavedLocationRef.current = currentLocationCfi;
-              if (typeof progressPercentage === "number") {
-                lastSavedProgressRef.current = progressPercentage;
+              lastSavedLocationRef.current = restoreLocationCfi;
+              if (typeof nextProgressPercentage === "number") {
+                lastSavedProgressRef.current = nextProgressPercentage;
               }
             } catch {
               // Ignore autosave issues to avoid interrupting reading.
@@ -423,8 +1038,15 @@ export function EpubReader({
           }, SAVE_PROGRESS_DEBOUNCE_MS);
         };
 
-        selectionHandler = (_cfiRange: string, contents: EpubContents) => {
+        selectionHandler = (...args: unknown[]) => {
           try {
+            const possibleContents = args[1];
+
+            if (!possibleContents || typeof possibleContents !== "object") {
+              return;
+            }
+
+            const contents = possibleContents as EpubContents;
             const selection = contents.window.getSelection();
 
             if (!selection || selection.rangeCount === 0) {
@@ -437,6 +1059,7 @@ export function EpubReader({
               return;
             }
 
+            clearPendingDesktopClickToggle();
             selectedContentsRef.current = contents;
             setSelectedText(extractedContext.selectedText);
             setContextSentence(extractedContext.contextSentence);
@@ -445,27 +1068,102 @@ export function EpubReader({
           }
         };
 
-        relocatedHandler = (location: unknown) => {
-          const relocatedPayload = location as RelocatedPayload;
-          const startCfi = getRelocatedStartCfi(relocatedPayload);
-          const endCfi = getRelocatedEndCfi(relocatedPayload);
-          const currentLocationCfi = startCfi ?? endCfi;
+        relocatedHandler = (...args: unknown[]) => {
+          const relocatedPayload = (args[0] ?? null) as RelocatedPayload | null;
+
+          if (!relocatedPayload) {
+            return;
+          }
+
+          const shouldPreferEndCfi = !isMobileViewportRef.current;
+          const currentLocationCfi = getPreferredRelocatedCfi(
+            relocatedPayload,
+            shouldPreferEndCfi,
+          );
           const fallbackProgressPercentage = getRelocatedFallbackProgress(relocatedPayload);
 
           if (!currentLocationCfi || isCancelled) {
             return;
           }
 
-          // Use end CFI for progress when available because it changes more often in paginated flow.
+          // Save and compute progress from the same visible anchor to improve resume precision.
           saveProgressForCfi(
             currentLocationCfi,
-            endCfi ?? currentLocationCfi,
+            currentLocationCfi,
             fallbackProgressPercentage,
           );
         };
 
-        rendition.on("selected", selectionHandler);
-        rendition.on("relocated", relocatedHandler);
+        clickHandler = (...args: unknown[]) => {
+          if (isCancelled) {
+            return;
+          }
+
+          if (isSettingsOpenRef.current) {
+            setIsSettingsOpen(false);
+            return;
+          }
+
+          const nativeSelection = selectedContentsRef.current?.window.getSelection();
+
+          if (nativeSelection && nativeSelection.toString().trim()) {
+            return;
+          }
+
+          if (selectedTextRef.current) {
+            return;
+          }
+
+          const shouldPreserveCurrentBehavior =
+            isMobileViewportRef.current || isTouchLikeDeviceRef.current;
+
+          if (shouldPreserveCurrentBehavior) {
+            toggleReaderUi();
+            return;
+          }
+
+          if (pendingDesktopClickTimerRef.current) {
+            clearPendingDesktopClickToggle();
+            return;
+          }
+
+          const clickEvent = args[0] as { detail?: unknown } | undefined;
+          const clickDetail =
+            typeof clickEvent?.detail === "number" && Number.isFinite(clickEvent.detail)
+              ? clickEvent.detail
+              : 1;
+
+          if (clickDetail >= 2) {
+            clearPendingDesktopClickToggle();
+            return;
+          }
+
+          pendingDesktopClickTimerRef.current = setTimeout(() => {
+            pendingDesktopClickTimerRef.current = null;
+
+            if (isCancelled) {
+              return;
+            }
+
+            const delayedSelection = selectedContentsRef.current?.window.getSelection();
+
+            if (delayedSelection && delayedSelection.toString().trim()) {
+              return;
+            }
+
+            if (selectedTextRef.current) {
+              return;
+            }
+
+            toggleReaderUi();
+          }, DESKTOP_SINGLE_CLICK_DELAY_MS);
+        };
+
+        const renditionEvents = getRenditionEvents(rendition);
+
+        renditionEvents.on("selected", selectionHandler);
+        renditionEvents.on("relocated", relocatedHandler);
+        renditionEvents.on("click", clickHandler);
 
         const prepareLocationsInBackground = async () => {
           try {
@@ -520,6 +1218,77 @@ export function EpubReader({
 
             locationsReadyRef.current = hasUsableLocations;
 
+            const maybeCorrectInitialRestoreFromProgress = async () => {
+              if (hasAttemptedInitialRestoreCorrection || isCancelled || hasUserNavigatedRef.current) {
+                return;
+              }
+
+              hasAttemptedInitialRestoreCorrection = true;
+
+              const normalizedInitialProgressPercentage = normalizeProgressPercentageValue(
+                initialProgressPercentage,
+              );
+
+              if (
+                typeof normalizedInitialProgressPercentage !== "number" ||
+                normalizedInitialProgressPercentage <= 0 ||
+                normalizedInitialProgressPercentage >= 100
+              ) {
+                return;
+              }
+
+              const currentCfi = getCurrentRenditionCfi(renditionRef.current);
+
+              if (!currentCfi) {
+                return;
+              }
+
+              const { progressPercentage: currentProgressPercentage } = getProgressFromCfi(
+                bookRef.current,
+                currentCfi,
+                true,
+                normalizedInitialProgressPercentage,
+              );
+
+              if (typeof currentProgressPercentage !== "number") {
+                return;
+              }
+
+              const delta = Math.abs(
+                currentProgressPercentage - normalizedInitialProgressPercentage,
+              );
+
+              if (delta < INITIAL_RESTORE_PROGRESS_DELTA_THRESHOLD) {
+                return;
+              }
+
+              if (typeof locations.cfiFromPercentage !== "function") {
+                return;
+              }
+
+              const correctedCfi = normalizeCfi(
+                locations.cfiFromPercentage(normalizedInitialProgressPercentage / 100),
+              );
+
+              if (!correctedCfi || correctedCfi === currentCfi) {
+                return;
+              }
+
+              try {
+                await rendition.display(correctedCfi);
+              } catch {
+                // Keep the first restored location if percentage-based correction fails.
+              }
+            };
+
+            if (locationsReadyRef.current) {
+              await maybeCorrectInitialRestoreFromProgress();
+
+              if (isCancelled) {
+                return;
+              }
+            }
+
             if (locationsReadyRef.current) {
               const currentCfi = getCurrentRenditionCfi(renditionRef.current);
 
@@ -550,25 +1319,38 @@ export function EpubReader({
             return;
           }
 
-          const nextWidth = renderContainer.clientWidth;
-          const nextHeight = renderContainer.clientHeight;
+          applySpreadForViewport(activeRendition, isMobileViewportRef.current);
 
-          if (nextWidth > 0 && nextHeight > 0) {
-            try {
-              activeRendition.resize(nextWidth, nextHeight);
-            } catch {
-              // Ignore transient resize race conditions while epub.js is settling.
-            }
+          const dimensions = getContainerDimensions(renderContainer);
+
+          if (!dimensions) {
+            return;
+          }
+
+          try {
+            activeRendition.resize(dimensions.width, dimensions.height);
+          } catch {
+            // Ignore transient resize race conditions while epub.js is settling.
           }
         };
 
         resizeRendition = handleResize;
 
         if (initialLocation) {
+          const sanitizedInitialLocation = sanitizeCfiForDisplay(initialLocation);
+
           try {
             await rendition.display(initialLocation);
           } catch {
-            await rendition.display();
+            if (sanitizedInitialLocation && sanitizedInitialLocation !== initialLocation) {
+              try {
+                await rendition.display(sanitizedInitialLocation);
+              } catch {
+                await rendition.display();
+              }
+            } else {
+              await rendition.display();
+            }
           }
         } else {
           await rendition.display();
@@ -614,6 +1396,13 @@ export function EpubReader({
 
     return () => {
       isCancelled = true;
+      window.removeEventListener("pagehide", handlePageHide);
+      if (saveProgressTimerRef.current) {
+        clearTimeout(saveProgressTimerRef.current);
+        saveProgressTimerRef.current = null;
+      }
+      captureLatestLocationSnapshot();
+      flushLatestProgress(true);
       abortController.abort();
       isRenditionReadyRef.current = false;
       locationsReadyRef.current = false;
@@ -621,15 +1410,15 @@ export function EpubReader({
         window.removeEventListener("resize", resizeRendition);
       }
       resizeObserver?.disconnect();
-      if (saveProgressTimerRef.current) {
-        clearTimeout(saveProgressTimerRef.current);
-        saveProgressTimerRef.current = null;
-      }
+      clearPendingDesktopClickToggle();
       if (selectionHandler && renditionRef.current) {
-        renditionRef.current.off("selected", selectionHandler);
+        getRenditionEvents(renditionRef.current).off("selected", selectionHandler);
       }
       if (relocatedHandler && renditionRef.current) {
-        renditionRef.current.off("relocated", relocatedHandler);
+        getRenditionEvents(renditionRef.current).off("relocated", relocatedHandler);
+      }
+      if (clickHandler && renditionRef.current) {
+        getRenditionEvents(renditionRef.current).off("click", clickHandler);
       }
       renditionRef.current?.destroy();
       renditionRef.current = null;
@@ -637,7 +1426,14 @@ export function EpubReader({
       bookRef.current = null;
       renderContainer.innerHTML = "";
     };
-  }, [fileUrl, bookId, initialLocation]);
+  }, [
+    bookId,
+    clearPendingDesktopClickToggle,
+    fileUrl,
+    initialLocation,
+    initialProgressPercentage,
+    toggleReaderUi,
+  ]);
 
   const goToPreviousPage = useCallback(async () => {
     if (!renditionRef.current) {
@@ -645,6 +1441,7 @@ export function EpubReader({
     }
 
     try {
+      hasUserNavigatedRef.current = true;
       clearSelection();
       await renditionRef.current.prev();
     } catch {
@@ -658,6 +1455,7 @@ export function EpubReader({
     }
 
     try {
+      hasUserNavigatedRef.current = true;
       clearSelection();
       await renditionRef.current.next();
     } catch {
@@ -666,38 +1464,71 @@ export function EpubReader({
   }, [clearSelection]);
 
   return (
-    <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className="flex shrink-0 items-center gap-2 border-b border-slate-200 px-3 py-2 sm:px-4">
-        <Button variant="secondary" size="sm" onClick={goToPreviousPage} disabled={!isReady}>
-          Previous
-        </Button>
-        <Button variant="secondary" size="sm" onClick={goToNextPage} disabled={!isReady}>
-          Next
-        </Button>
-      </div>
+    <section
+      className={cn(
+        "relative flex h-full min-h-0 w-full flex-col overflow-hidden",
+        theme === "dark" ? "text-slate-100" : "text-slate-900",
+      )}
+      style={{ backgroundColor: themePalette.appBackground, color: themePalette.appText }}
+    >
+      <ReaderTopBar
+        title={bookTitle}
+        author={bookAuthor}
+        isVisible={isReaderUiVisible}
+        progressPercentage={progressPercentage}
+        onBack={navigateBackToLibrary}
+        onOpenSettings={openSettings}
+      />
 
-      <div
-        className="relative flex-1 min-h-0 overflow-hidden"
-      >
-        <div ref={containerRef} className="h-full w-full min-h-0 overflow-hidden bg-white" />
+      <ReaderControls
+        isVisible={isReaderUiVisible}
+        isReady={isReady}
+        progressPercentage={progressPercentage}
+        onPrev={goToPreviousPage}
+        onNext={goToNextPage}
+      />
+
+      <div className="relative flex-1 min-h-0 overflow-hidden">
+        <div
+          ref={containerRef}
+          className="h-full w-full min-h-0 overflow-hidden"
+          style={{ backgroundColor: themePalette.epubBackground }}
+        />
 
         {isLoading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-white/90 px-4">
-            <p className="text-sm text-slate-600">Loading reader...</p>
+          <div
+            className="absolute inset-0 flex items-center justify-center px-4"
+            style={{ backgroundColor: themePalette.loadingOverlay }}
+          >
+            <p className={cn("text-sm", theme === "dark" ? "text-slate-200" : "text-slate-600")}>
+              Loading reader...
+            </p>
           </div>
         )}
 
         {errorMessage && (
-          <div className="absolute left-3 right-3 top-3">
+          <div className="absolute left-3 right-3 top-3 z-50">
             <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
               {errorMessage}
             </p>
           </div>
         )}
 
+        <ReaderSettingsPanel
+          isOpen={isSettingsOpen}
+          theme={theme}
+          fontSize={fontSize}
+          minFontSize={MIN_READER_FONT_SIZE}
+          maxFontSize={MAX_READER_FONT_SIZE}
+          onClose={closeSettings}
+          onThemeChange={setTheme}
+          onDecreaseFontSize={decreaseFontSize}
+          onIncreaseFontSize={increaseFontSize}
+        />
+
         {selectedText && (
           <>
-            <div className="absolute bottom-3 right-3 z-30 hidden w-full max-w-md md:block">
+            <div className="absolute bottom-4 right-4 z-60 hidden w-full max-w-md md:block">
               <SelectionPanel
                 bookId={bookId}
                 selectedText={selectedText}
@@ -705,10 +1536,18 @@ export function EpubReader({
                 sourceLanguage={sourceLanguage}
                 targetLanguage={targetLanguage}
                 onClear={clearSelection}
+                variant="desktop"
               />
             </div>
 
-            <div className="fixed inset-x-3 bottom-20 z-50 md:hidden">
+            <div
+              className={cn(
+                "absolute inset-x-3 z-70 md:hidden",
+                isReaderUiVisible
+                  ? "bottom-[calc(env(safe-area-inset-bottom)+5.75rem)]"
+                  : "bottom-[calc(env(safe-area-inset-bottom)+0.75rem)]",
+              )}
+            >
               <SelectionPanel
                 bookId={bookId}
                 selectedText={selectedText}
@@ -716,6 +1555,7 @@ export function EpubReader({
                 sourceLanguage={sourceLanguage}
                 targetLanguage={targetLanguage}
                 onClear={clearSelection}
+                variant="mobile"
               />
             </div>
           </>

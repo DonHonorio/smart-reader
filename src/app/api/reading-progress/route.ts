@@ -210,9 +210,11 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     if (upsertError) {
+      console.error("Supabase upsert error:", upsertError);
       return jsonError("Could not save reading progress.", 500);
     }
 
+    console.log('SAVED PROGRESS - CURRENT LOCATION:', savedProgress?.current_location);
     return NextResponse.json(
       buildResponse(
         typeof savedProgress?.current_location === "string"

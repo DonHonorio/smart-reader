@@ -78,12 +78,22 @@ export type CreateCheckoutSessionResponse =
 
 export type CheckoutStatus = "success" | "cancelled";
 
+export type ReaderTheme = "light" | "dark" | "sepia";
+
+export type ReaderPreferences = {
+  theme: ReaderTheme;
+  fontSize: number;
+};
+
 export type EpubReaderProps = {
   fileUrl: string;
   bookId: string;
+  bookTitle: string;
+  bookAuthor: string;
   sourceLanguage: string;
   targetLanguage: string;
   initialLocation?: string | null;
+  initialProgressPercentage?: number | null;
 };
 
 export type ReadingProgress = {

@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/Button";
+import { cn } from "@/lib/utils";
 import type { SaveVocabularyRequest, SaveVocabularyResponse } from "@/types";
 
 const MAX_SELECTED_TEXT_LENGTH = 300;
@@ -15,6 +16,7 @@ type SelectionPanelProps = {
   sourceLanguage: string;
   targetLanguage: string;
   onClear: () => void;
+  variant?: "desktop" | "mobile";
 };
 
 type NormalizedTranslation = {
@@ -77,6 +79,7 @@ export function SelectionPanel({
   sourceLanguage,
   targetLanguage,
   onClear,
+  variant = "desktop",
 }: SelectionPanelProps) {
   const [isTranslating, setIsTranslating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -269,8 +272,24 @@ export function SelectionPanel({
     onClear();
   }
 
+  const isMobileVariant = variant === "mobile";
+
   return (
-    <section className="w-full max-h-[40vh] overflow-auto rounded-xl border border-slate-200 bg-white p-3 shadow-lg">
+    <section
+      className={cn(
+        "w-full overflow-auto border p-3 shadow-xl",
+        isMobileVariant
+          ? "max-h-[48vh] rounded-2xl border-slate-200 bg-white"
+          : "max-h-[50vh] rounded-2xl border-slate-200/90 bg-white/95 backdrop-blur",
+      )}
+    >
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selection</p>
+        <Button variant="ghost" size="sm" onClick={handleClear}>
+          Close
+        </Button>
+      </div>
+
       <div className="space-y-2">
         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selected text</p>
         <p className="max-h-20 overflow-auto rounded-md bg-slate-50 px-2 py-1.5 text-sm text-slate-800">
@@ -333,9 +352,6 @@ export function SelectionPanel({
           disabled={!translation || isSaving || isSaved}
         >
           {saveButtonLabel}
-        </Button>
-        <Button variant="ghost" size="sm" onClick={handleClear}>
-          Clear
         </Button>
       </div>
 
