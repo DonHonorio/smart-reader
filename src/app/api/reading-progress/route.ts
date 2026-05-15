@@ -1,19 +1,39 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import type { ReadingProgressResponse, UpsertReadingProgressRequest } from "@/types";
+import type {
+  ReadingProgressResponse,
+  ReadingProgressSaveReason,
+  UpsertReadingProgressRequest,
+} from "@/types";
 
 const MAX_CFI_LENGTH = 2000;
+const MAX_CHAPTER_HREF_LENGTH = 500;
+
+const ALLOWED_SAVE_REASONS: ReadonlyArray<ReadingProgressSaveReason> = [
+  "next",
+  "prev",
+  "stable_reading",
+  "manual",
+];
+
+type ReadingProgressRow = {
+  current_location: unknown;
+  progress_percentage: unknown;
+  chapter_href: unknown;
+  save_reason: unknown;
+  last_stable_at: unknown;
+};
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status });
 }
 
-function normalizeText(value: string) {
-  return value.replace(/\s+/g, " ").trim();
+function normalizeIdentifier(value: string) {
+  return value.trim();
 }
 
-function normalizeProgressPercentage(value: unknown) {
-  if (typeof value !== "number" || Number.isNaN(value)) {
+function normalizeStoredProgressPercentage(value: unknown) {
+  if (typeof value !== "number" || Number.isNaN(value) || !Number.isFinite(value)) {
     return 0;
   }
 
@@ -28,30 +48,36 @@ function normalizeProgressPercentage(value: unknown) {
   return value;
 }
 
-function parseOptionalProgressPercentage(value: unknown) {
-  if (typeof value === "undefined") {
-    return {
-      isProvided: false,
-      value: undefined,
-    } as const;
+function normalizeProgressPercentage(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function normalizeOptionalString(value: unknown) {
+  if (typeof value !== "string") {
+    return null;
   }
 
-  if (typeof value !== "number" || Number.isNaN(value)) {
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function parseProgressPercentage(value: unknown) {
+  if (typeof value !== "number" || Number.isNaN(value) || !Number.isFinite(value)) {
     return {
-      isProvided: true,
+      isValid: false,
       value: null,
     } as const;
   }
 
   if (!isProgressPercentageInRange(value)) {
     return {
-      isProvided: true,
+      isValid: false,
       value: null,
     } as const;
   }
 
   return {
-    isProvided: true,
+    isValid: true,
     value: normalizeProgressPercentage(value),
   } as const;
 }
@@ -60,19 +86,86 @@ function isProgressPercentageInRange(value: number) {
   return value >= 0 && value <= 100;
 }
 
-function buildResponse(
-  currentLocation: string | null,
-  progressPercentage: unknown,
-): ReadingProgressResponse {
+function parseOptionalChapterHref(value: unknown) {
+  if (typeof value === "undefined" || value === null) {
+    return {
+      isValid: true,
+      value: null,
+    } as const;
+  }
+
+  if (typeof value !== "string") {
+    return {
+      isValid: false,
+      value: null,
+      error: "chapterHref must be a string or null.",
+    } as const;
+  }
+
+  const normalized = value.trim();
+
+  if (!normalized) {
+    return {
+      isValid: true,
+      value: null,
+    } as const;
+  }
+
+  if (normalized.length > MAX_CHAPTER_HREF_LENGTH) {
+    return {
+      isValid: false,
+      value: null,
+      error: `chapterHref must be at most ${MAX_CHAPTER_HREF_LENGTH} characters.`,
+    } as const;
+  }
+
   return {
-    currentLocation,
-    progressPercentage: normalizeProgressPercentage(progressPercentage),
+    isValid: true,
+    value: normalized,
+  } as const;
+}
+
+function parseOptionalSaveReason(value: unknown) {
+  if (typeof value === "undefined" || value === null) {
+    return {
+      isValid: true,
+      value: null,
+    } as const;
+  }
+
+  if (typeof value !== "string" || !(ALLOWED_SAVE_REASONS as ReadonlyArray<string>).includes(value)) {
+    return {
+      isValid: false,
+      value: null,
+      error: "saveReason must be one of: next, prev, stable_reading, manual.",
+    } as const;
+  }
+
+  return {
+    isValid: true,
+    value,
+  } as const;
+}
+
+function buildResponse(data: ReadingProgressRow | null, fallbackCurrentLocation: string | null = null): ReadingProgressResponse {
+  return {
+    currentLocation:
+      normalizeOptionalString(data?.current_location)
+      ?? fallbackCurrentLocation,
+    progressPercentage: normalizeStoredProgressPercentage(data?.progress_percentage),
+    chapterHref: normalizeOptionalString(data?.chapter_href),
+    saveReason:
+      typeof data?.save_reason === "string" &&
+      (ALLOWED_SAVE_REASONS as ReadonlyArray<string>).includes(data.save_reason)
+        ? (data.save_reason as ReadingProgressSaveReason)
+        : null,
+    lastStableAt: normalizeOptionalString(data?.last_stable_at),
   };
 }
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
-  const bookId = normalizeText(url.searchParams.get("bookId") ?? "");
+  const bookId = normalizeIdentifier(url.searchParams.get("bookId") ?? "");
 
   if (!bookId) {
     return jsonError("bookId is required.", 400);
@@ -106,7 +199,9 @@ export async function GET(request: Request) {
 
     const { data, error } = await supabase
       .from("reading_progress")
-      .select("current_location, progress_percentage")
+      .select(
+        "current_location, progress_percentage, chapter_href, save_reason, last_stable_at",
+      )
       .eq("user_id", user.id)
       .eq("book_id", bookId)
       .maybeSingle();
@@ -115,12 +210,7 @@ export async function GET(request: Request) {
       return jsonError("Could not load reading progress.", 500);
     }
 
-    return NextResponse.json(
-      buildResponse(
-        typeof data?.current_location === "string" ? data.current_location : null,
-        data?.progress_percentage,
-      ),
-    );
+    return NextResponse.json(buildResponse((data as ReadingProgressRow | null) ?? null));
   } catch (error) {
     console.error("/api/reading-progress GET unexpected error:", error);
     return jsonError("Could not load reading progress.", 500);
@@ -136,20 +226,20 @@ export async function POST(request: Request) {
     return jsonError("Invalid request body.", 400);
   }
 
-  const { bookId, currentLocation, progressPercentage } =
+  const { bookId, currentLocation, progressPercentage, chapterHref, saveReason } =
     (body ?? {}) as Partial<UpsertReadingProgressRequest>;
 
-  if (typeof bookId !== "string" || !normalizeText(bookId)) {
+  if (typeof bookId !== "string" || !normalizeIdentifier(bookId)) {
     return jsonError("bookId is required.", 400);
   }
 
-  const normalizedBookId = normalizeText(bookId);
+  const normalizedBookId = normalizeIdentifier(bookId);
 
   if (typeof currentLocation !== "string") {
     return jsonError("currentLocation is required.", 400);
   }
 
-  const normalizedCurrentLocation = normalizeText(currentLocation);
+  const normalizedCurrentLocation = currentLocation.trim();
 
   if (!normalizedCurrentLocation) {
     return jsonError("currentLocation is required.", 400);
@@ -159,10 +249,20 @@ export async function POST(request: Request) {
     return jsonError("currentLocation is too long.", 400);
   }
 
-  const parsedProgressPercentage = parseOptionalProgressPercentage(progressPercentage);
+  const parsedProgressPercentage = parseProgressPercentage(progressPercentage);
 
-  if (parsedProgressPercentage.isProvided && parsedProgressPercentage.value === null) {
+  if (!parsedProgressPercentage.isValid || parsedProgressPercentage.value === null) {
     return jsonError("progressPercentage must be a valid number between 0 and 100.", 400);
+  }
+
+  const parsedChapterHref = parseOptionalChapterHref(chapterHref);
+  if (!parsedChapterHref.isValid) {
+    return jsonError(parsedChapterHref.error, 400);
+  }
+
+  const parsedSaveReason = parseOptionalSaveReason(saveReason);
+  if (!parsedSaveReason.isValid) {
+    return jsonError(parsedSaveReason.error, 400);
   }
 
   try {
@@ -191,14 +291,16 @@ export async function POST(request: Request) {
       return jsonError("Book not found.", 404);
     }
 
+    const nowIso = new Date().toISOString();
     const upsertPayload = {
       user_id: user.id,
       book_id: normalizedBookId,
       current_location: normalizedCurrentLocation,
-      updated_at: new Date().toISOString(),
-      ...(typeof parsedProgressPercentage.value === "number"
-        ? { progress_percentage: parsedProgressPercentage.value }
-        : {}),
+      progress_percentage: parsedProgressPercentage.value,
+      chapter_href: parsedChapterHref.value,
+      save_reason: parsedSaveReason.value ?? "manual",
+      last_stable_at: nowIso,
+      updated_at: nowIso,
     };
 
     const { data: savedProgress, error: upsertError } = await supabase
@@ -206,7 +308,9 @@ export async function POST(request: Request) {
       .upsert(upsertPayload, {
         onConflict: "user_id,book_id",
       })
-      .select("current_location, progress_percentage")
+      .select(
+        "current_location, progress_percentage, chapter_href, save_reason, last_stable_at",
+      )
       .maybeSingle();
 
     if (upsertError) {
@@ -214,13 +318,10 @@ export async function POST(request: Request) {
       return jsonError("Could not save reading progress.", 500);
     }
 
-    console.log('SAVED PROGRESS - CURRENT LOCATION:', savedProgress?.current_location);
     return NextResponse.json(
       buildResponse(
-        typeof savedProgress?.current_location === "string"
-          ? savedProgress.current_location
-          : normalizedCurrentLocation,
-        savedProgress?.progress_percentage,
+        (savedProgress as ReadingProgressRow | null) ?? null,
+        normalizedCurrentLocation,
       ),
     );
   } catch (error) {

@@ -1,6 +1,11 @@
 import { createClient } from "@/lib/supabase/server";
 import { unstable_noStore as noStore } from "next/cache";
-import type { Book, BookWithProgress, ReadingProgressResponse } from "@/types";
+import type {
+  Book,
+  BookWithProgress,
+  ReadingProgressResponse,
+  ReadingProgressSaveReason,
+} from "@/types";
 
 const BOOK_FIELDS =
   "id, user_id, title, author, language_from, language_to, file_path, cover_path, status, created_at, updated_at";
@@ -8,6 +13,9 @@ const BOOK_FIELDS =
 const DEFAULT_READING_PROGRESS: ReadingProgressResponse = {
   currentLocation: null,
   progressPercentage: 0,
+  chapterHref: null,
+  saveReason: null,
+  lastStableAt: null,
 };
 
 type ReadingProgressBookRow = {
@@ -39,6 +47,10 @@ function normalizeDateString(value: unknown) {
 
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function isReadingProgressSaveReason(value: unknown): value is ReadingProgressSaveReason {
+  return value === "next" || value === "prev" || value === "stable_reading" || value === "manual";
 }
 
 function toTimestamp(value: string | null | undefined) {
@@ -281,7 +293,9 @@ export async function getUserReadingProgressByBookId(
 
   const { data, error } = await supabase
     .from("reading_progress")
-    .select("current_location, progress_percentage")
+    .select(
+      "current_location, progress_percentage, chapter_href, save_reason, last_stable_at",
+    )
     .eq("user_id", user.id)
     .eq("book_id", bookId)
     .maybeSingle();
@@ -294,5 +308,8 @@ export async function getUserReadingProgressByBookId(
   return {
     currentLocation: typeof data?.current_location === "string" ? data.current_location : null,
     progressPercentage: normalizeProgressPercentage(data?.progress_percentage),
+    chapterHref: normalizeDateString(data?.chapter_href),
+    saveReason: isReadingProgressSaveReason(data?.save_reason) ? data.save_reason : null,
+    lastStableAt: normalizeDateString(data?.last_stable_at),
   };
 }

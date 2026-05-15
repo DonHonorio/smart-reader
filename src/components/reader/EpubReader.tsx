@@ -12,15 +12,19 @@ import { extractContextSentenceFromSelection } from "@/lib/text";
 import { cn } from "@/lib/utils";
 import type {
   EpubReaderProps,
+  ReadingProgressSaveReason,
   ReaderPreferences,
   ReaderTheme,
   UpsertReadingProgressRequest,
 } from "@/types";
 
-const SAVE_PROGRESS_DEBOUNCE_MS = 800;
+const STABLE_READING_SAVE_DEBOUNCE_MS = 2500;
 const LOCATIONS_GENERATE_CHARS = 1000;
 const LOCATIONS_CACHE_VERSION = "v3";
 const LOCATIONS_CACHE_KEY_PREFIX = "smart-reader:locations:";
+const INITIAL_RESTORE_SETTLE_MS = 500;
+const READER_SETTINGS_SETTLE_MS = 700;
+const PENDING_NAVIGATION_REASON_TIMEOUT_MS = 2000;
 
 const READER_PREFERENCES_STORAGE_KEY = "smart-reader:reader-preferences:v1";
 const DEFAULT_READER_THEME: ReaderTheme = "light";
@@ -75,6 +79,8 @@ type RelocatedPayload = {
   percentage?: unknown;
   start?: {
     cfi?: unknown;
+    href?: unknown;
+    index?: unknown;
     percentage?: unknown;
     displayed?: {
       page?: unknown;
@@ -83,6 +89,8 @@ type RelocatedPayload = {
   };
   end?: {
     cfi?: unknown;
+    href?: unknown;
+    index?: unknown;
     percentage?: unknown;
     displayed?: {
       page?: unknown;
@@ -312,24 +320,36 @@ function getRelocatedEndCfi(payload: RelocatedPayload) {
   return normalizeCfi(payload.end?.cfi);
 }
 
-function isDisplayedLastPage(displayed: { page?: unknown; total?: unknown } | undefined) {
-  if (!displayed) {
-    return false;
+function normalizeChapterHref(value: unknown) {
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    return normalized || null;
   }
 
-  const { page, total } = displayed;
-
-  if (
-    typeof page !== "number" ||
-    typeof total !== "number" ||
-    !Number.isFinite(page) ||
-    !Number.isFinite(total) ||
-    total <= 0
-  ) {
-    return false;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return `index:${value}`;
   }
 
-  return page >= total;
+  return null;
+}
+
+function getRelocatedChapterHref(payload: RelocatedPayload) {
+  const chapterHrefCandidates = [
+    payload.start?.href,
+    payload.start?.index,
+    payload.end?.href,
+    payload.end?.index,
+  ];
+
+  for (const candidate of chapterHrefCandidates) {
+    const normalized = normalizeChapterHref(candidate);
+
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
 }
 
 function getCfiSpineKey(cfi: string | null) {
@@ -438,18 +458,9 @@ function nudgeCfiForward(cfi: string | null, chars = 1) {
   return nextCfi !== normalized ? nextCfi : null;
 }
 
-function getPreferredRelocatedCfi(payload: RelocatedPayload, preferEnd: boolean) {
+function getStableStartCfi(payload: RelocatedPayload) {
   const startCfi = getRelocatedStartCfi(payload);
   const endCfi = getRelocatedEndCfi(payload);
-
-  if (preferEnd && endCfi) {
-    const endIsLastPageInSection = isDisplayedLastPage(payload.end?.displayed);
-    const crossesSpineBoundary = areCfisInDifferentSpines(startCfi, endCfi);
-
-    if (!endIsLastPageInSection && !crossesSpineBoundary) {
-      return endCfi;
-    }
-  }
 
   return startCfi ?? endCfi;
 }
@@ -707,10 +718,17 @@ export function EpubReader({
   const bookRef = useRef<EpubBook | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
   const selectedContentsRef = useRef<EpubContents | null>(null);
-  const saveProgressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stableReadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingNavigationReasonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const restoreGuardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const readerSettingsGuardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingDesktopClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isRestoringInitialLocationRef = useRef(false);
+  const isApplyingReaderSettingsRef = useRef(false);
+  const pendingNavigationReasonRef = useRef<ReadingProgressSaveReason | null>(null);
   const latestRestoreLocationRef = useRef<string | null>(null);
   const latestProgressPercentageRef = useRef<number | null>(null);
+  const latestChapterHrefRef = useRef<string | null>(null);
   const lastSavedLocationRef = useRef<string | null>(null);
   const lastSavedProgressRef = useRef<number | null>(null);
   const hasUserNavigatedRef = useRef(false);
@@ -744,6 +762,65 @@ export function EpubReader({
 
   const themePalette = useMemo(() => READER_THEME_PALETTE[theme], [theme]);
   const isReaderUiVisible = isChromeVisible || isSettingsOpen;
+
+  const clearStableReadingDebounce = useCallback(() => {
+    if (stableReadingTimerRef.current) {
+      clearTimeout(stableReadingTimerRef.current);
+      stableReadingTimerRef.current = null;
+    }
+  }, []);
+
+  const clearPendingNavigationReason = useCallback(() => {
+    pendingNavigationReasonRef.current = null;
+
+    if (pendingNavigationReasonTimerRef.current) {
+      clearTimeout(pendingNavigationReasonTimerRef.current);
+      pendingNavigationReasonTimerRef.current = null;
+    }
+  }, []);
+
+  const setPendingNavigationReason = useCallback((reason: "next" | "prev") => {
+    pendingNavigationReasonRef.current = reason;
+
+    if (pendingNavigationReasonTimerRef.current) {
+      clearTimeout(pendingNavigationReasonTimerRef.current);
+    }
+
+    pendingNavigationReasonTimerRef.current = setTimeout(() => {
+      pendingNavigationReasonRef.current = null;
+      pendingNavigationReasonTimerRef.current = null;
+    }, PENDING_NAVIGATION_REASON_TIMEOUT_MS);
+  }, []);
+
+  const clearRestoreGuardTimer = useCallback(() => {
+    if (restoreGuardTimerRef.current) {
+      clearTimeout(restoreGuardTimerRef.current);
+      restoreGuardTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleRestoreGuardRelease = useCallback(() => {
+    clearRestoreGuardTimer();
+    restoreGuardTimerRef.current = setTimeout(() => {
+      isRestoringInitialLocationRef.current = false;
+      restoreGuardTimerRef.current = null;
+    }, INITIAL_RESTORE_SETTLE_MS);
+  }, [clearRestoreGuardTimer]);
+
+  const clearReaderSettingsGuardTimer = useCallback(() => {
+    if (readerSettingsGuardTimerRef.current) {
+      clearTimeout(readerSettingsGuardTimerRef.current);
+      readerSettingsGuardTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleReaderSettingsGuardRelease = useCallback(() => {
+    clearReaderSettingsGuardTimer();
+    readerSettingsGuardTimerRef.current = setTimeout(() => {
+      isApplyingReaderSettingsRef.current = false;
+      readerSettingsGuardTimerRef.current = null;
+    }, READER_SETTINGS_SETTLE_MS);
+  }, [clearReaderSettingsGuardTimer]);
 
   useEffect(() => {
     selectedTextRef.current = selectedText;
@@ -827,8 +904,17 @@ export function EpubReader({
   }, []);
 
   useEffect(() => {
-    applyReaderAppearance(renditionRef.current, theme, fontSize);
-  }, [theme, fontSize]);
+    const rendition = renditionRef.current;
+
+    if (!rendition) {
+      return;
+    }
+
+    isApplyingReaderSettingsRef.current = true;
+    clearStableReadingDebounce();
+    applyReaderAppearance(rendition, theme, fontSize);
+    scheduleReaderSettingsGuardRelease();
+  }, [clearStableReadingDebounce, scheduleReaderSettingsGuardRelease, theme, fontSize]);
 
   useEffect(() => {
     const rendition = renditionRef.current;
@@ -837,7 +923,10 @@ export function EpubReader({
       return;
     }
 
+    isApplyingReaderSettingsRef.current = true;
+    clearStableReadingDebounce();
     applySpreadForViewport(rendition, isMobileViewport);
+    scheduleReaderSettingsGuardRelease();
 
     const dimensions = getContainerDimensions(containerRef.current);
 
@@ -850,7 +939,7 @@ export function EpubReader({
     } catch {
       // Ignore transient resize race conditions while epub.js is settling.
     }
-  }, [isMobileViewport]);
+  }, [clearStableReadingDebounce, isMobileViewport, scheduleReaderSettingsGuardRelease]);
 
   const clearSelection = useCallback(() => {
     const nativeSelection = selectedContentsRef.current?.window.getSelection();
@@ -924,12 +1013,8 @@ export function EpubReader({
     locationsReadyRef.current = false;
     selectedContentsRef.current = null;
     clearPendingDesktopClickToggle();
-    if (saveProgressTimerRef.current) {
-      clearTimeout(saveProgressTimerRef.current);
-      saveProgressTimerRef.current = null;
-    }
     lastSavedLocationRef.current = initialLocation ?? null;
-    lastSavedProgressRef.current = null;
+    lastSavedProgressRef.current = normalizeProgressPercentageValue(initialProgressPercentage);
     hasUserNavigatedRef.current = false;
     setIsLoading(true);
     setIsReady(false);
@@ -941,94 +1026,106 @@ export function EpubReader({
     setIsChromeVisible(false);
     latestRestoreLocationRef.current = initialLocation ?? null;
     latestProgressPercentageRef.current = null;
+    latestChapterHrefRef.current = null;
+    clearStableReadingDebounce();
+    clearPendingNavigationReason();
+    clearRestoreGuardTimer();
+    clearReaderSettingsGuardTimer();
+    isRestoringInitialLocationRef.current = false;
+    isApplyingReaderSettingsRef.current = false;
 
-    const captureLatestLocationSnapshot = () => {
-      const currentLocationPayload = getCurrentRenditionLocationPayload(renditionRef.current);
+    const beginInitialRestorePhase = () => {
+      isRestoringInitialLocationRef.current = true;
+      clearStableReadingDebounce();
+      clearRestoreGuardTimer();
+    };
 
-      if (!currentLocationPayload) {
-        return;
-      }
-
-      const shouldPreferEndCfi = !isMobileViewportRef.current;
-      const restoreLocationCfi = getPreferredRelocatedCfi(
-        currentLocationPayload,
-        shouldPreferEndCfi,
-      );
-
-      if (!restoreLocationCfi) {
-        return;
-      }
-
-      const fallbackProgressPercentage = getRelocatedFallbackProgress(currentLocationPayload);
-      const { progressPercentage: recalculatedProgressPercentage } = getProgressFromCfi(
+    const updateLatestLocationSnapshot = (
+      restoreLocationCfi: string,
+      fallbackProgressPercentage: number | null,
+      relocatedPayload: RelocatedPayload | null,
+    ) => {
+      const { progressPercentage: nextProgressPercentage } = getProgressFromCfi(
         bookRef.current,
         restoreLocationCfi,
         locationsReadyRef.current,
-        fallbackProgressPercentage ?? latestProgressPercentageRef.current,
+        fallbackProgressPercentage,
       );
 
-      if (typeof recalculatedProgressPercentage === "number") {
-        latestProgressPercentageRef.current = recalculatedProgressPercentage;
-      }
-
       latestRestoreLocationRef.current = restoreLocationCfi;
+      latestProgressPercentageRef.current =
+        typeof nextProgressPercentage === "number" ? nextProgressPercentage : null;
+      latestChapterHrefRef.current = relocatedPayload
+        ? getRelocatedChapterHref(relocatedPayload)
+        : latestChapterHrefRef.current;
+
+      if (typeof nextProgressPercentage === "number") {
+        setProgressPercentage((current) => {
+          if (typeof current === "number" && Math.abs(current - nextProgressPercentage) < 0.05) {
+            return current;
+          }
+
+          return nextProgressPercentage;
+        });
+      }
     };
 
-    const flushLatestProgress = (useKeepalive: boolean) => {
-      if (!hasUserNavigatedRef.current) {
+    const saveStableReadingProgress = async (reason: ReadingProgressSaveReason) => {
+      if (isCancelled || isRestoringInitialLocationRef.current || isApplyingReaderSettingsRef.current) {
         return;
       }
 
       const restoreLocationCfi = latestRestoreLocationRef.current;
+      const normalizedProgressPercentage = normalizeProgressPercentageValue(
+        latestProgressPercentageRef.current,
+      );
 
-      if (!restoreLocationCfi) {
+      if (!restoreLocationCfi || typeof normalizedProgressPercentage !== "number") {
         return;
       }
 
-      const nextProgressPercentage = latestProgressPercentageRef.current;
       const isSameLocation = lastSavedLocationRef.current === restoreLocationCfi;
       const hasProgressUpdate =
-        typeof nextProgressPercentage === "number" &&
-        (typeof lastSavedProgressRef.current !== "number" ||
-          Math.abs(lastSavedProgressRef.current - nextProgressPercentage) >= 0.01);
+        typeof lastSavedProgressRef.current !== "number"
+          ? true
+          : Math.abs(lastSavedProgressRef.current - normalizedProgressPercentage) >= 0.01;
 
       if (isSameLocation && !hasProgressUpdate) {
         return;
       }
 
+      const currentPayload = getCurrentRenditionLocationPayload(renditionRef.current);
+      const chapterHref = currentPayload
+        ? getRelocatedChapterHref(currentPayload)
+        : latestChapterHrefRef.current;
+
       const body: UpsertReadingProgressRequest = {
         bookId,
         currentLocation: restoreLocationCfi,
-        ...(typeof nextProgressPercentage === "number"
-          ? { progressPercentage: nextProgressPercentage }
-          : {}),
+        progressPercentage: normalizedProgressPercentage,
+        chapterHref,
+        saveReason: reason,
       };
 
       try {
-        void fetch("/api/reading-progress", {
+        const progressResponse = await fetch("/api/reading-progress", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
           body: JSON.stringify(body),
-          ...(useKeepalive ? { keepalive: true } : {}),
         });
 
-        lastSavedLocationRef.current = restoreLocationCfi;
-        if (typeof nextProgressPercentage === "number") {
-          lastSavedProgressRef.current = nextProgressPercentage;
+        if (!progressResponse.ok) {
+          return;
         }
+
+        lastSavedLocationRef.current = restoreLocationCfi;
+        lastSavedProgressRef.current = normalizedProgressPercentage;
       } catch {
-        // Ignore best-effort flush errors on navigation/unload.
+        // Ignore autosave issues to avoid interrupting reading.
       }
     };
-
-    const handlePageHide = () => {
-      captureLatestLocationSnapshot();
-      flushLatestProgress(true);
-    };
-
-    window.addEventListener("pagehide", handlePageHide);
 
     async function mountReader() {
       try {
@@ -1074,105 +1171,6 @@ export function EpubReader({
         bookRef.current = book;
         renditionRef.current = rendition;
 
-        const saveProgressForCfi = (
-          restoreLocationCfi: string,
-          progressCfi?: string | null,
-          fallbackProgressPercentage: number | null = null,
-        ) => {
-          if (isCancelled) {
-            return;
-          }
-
-          const effectiveProgressCfi = progressCfi ?? restoreLocationCfi;
-
-          const { percentage, progressPercentage: nextProgressPercentage } = getProgressFromCfi(
-            bookRef.current,
-            effectiveProgressCfi,
-            locationsReadyRef.current,
-            fallbackProgressPercentage,
-          );
-
-          latestRestoreLocationRef.current = restoreLocationCfi;
-          latestProgressPercentageRef.current =
-            typeof nextProgressPercentage === "number" ? nextProgressPercentage : null;
-
-          if (typeof nextProgressPercentage === "number") {
-            setProgressPercentage((current) => {
-              if (
-                typeof current === "number" &&
-                Math.abs(current - nextProgressPercentage) < 0.05
-              ) {
-                return current;
-              }
-
-              return nextProgressPercentage;
-            });
-          }
-
-          if (!hasUserNavigatedRef.current) {
-            return;
-          }
-
-          const isSameLocation = lastSavedLocationRef.current === restoreLocationCfi;
-          const hasProgressUpdate =
-            typeof nextProgressPercentage === "number" &&
-            (typeof lastSavedProgressRef.current !== "number" ||
-              Math.abs(lastSavedProgressRef.current - nextProgressPercentage) >= 0.01);
-
-          if (isSameLocation && !hasProgressUpdate) {
-            return;
-          }
-
-          if (saveProgressTimerRef.current) {
-            clearTimeout(saveProgressTimerRef.current);
-          }
-
-          saveProgressTimerRef.current = setTimeout(async () => {
-            if (isCancelled) {
-              return;
-            }
-
-            try {
-              const body: UpsertReadingProgressRequest = {
-                bookId,
-                currentLocation: restoreLocationCfi,
-                ...(typeof nextProgressPercentage === "number"
-                  ? { progressPercentage: nextProgressPercentage }
-                  : {}),
-              };
-
-              if (process.env.NODE_ENV !== "production") {
-                console.log("Reading progress", {
-                  restoreLocationCfi,
-                  progressCfi: effectiveProgressCfi,
-                  percentage,
-                  progressPercentage: nextProgressPercentage,
-                  locationsReady: locationsReadyRef.current,
-                });
-              }
-
-              const progressResponse = await fetch("/api/reading-progress", {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify(body),
-              });
-
-              if (!progressResponse.ok) {
-                return;
-              }
-
-              lastSavedLocationRef.current = restoreLocationCfi;
-              if (typeof nextProgressPercentage === "number") {
-                lastSavedProgressRef.current = nextProgressPercentage;
-              }
-            } catch {
-              // Ignore autosave issues to avoid interrupting reading.
-            }
-          }, SAVE_PROGRESS_DEBOUNCE_MS);
-        };
-
         selectionHandler = (...args: unknown[]) => {
           try {
             const possibleContents = args[1];
@@ -1210,18 +1208,21 @@ export function EpubReader({
             return;
           }
 
-          const shouldPreferEndCfi = !isMobileViewportRef.current;
-          const currentLocationCfi = getPreferredRelocatedCfi(
-            relocatedPayload,
-            shouldPreferEndCfi,
-          );
+          const currentLocationCfi = getStableStartCfi(relocatedPayload);
           const fallbackProgressPercentage = getRelocatedFallbackProgress(relocatedPayload);
 
           if (!currentLocationCfi || isCancelled) {
             return;
           }
 
+          updateLatestLocationSnapshot(
+            currentLocationCfi,
+            fallbackProgressPercentage ?? latestProgressPercentageRef.current,
+            relocatedPayload,
+          );
+
           if (
+            isRestoringInitialLocationRef.current &&
             !hasUserNavigatedRef.current &&
             !hasAttemptedInitialLocationRecovery &&
             initialLocation
@@ -1260,21 +1261,52 @@ export function EpubReader({
               if (nextRecovery) {
                 hasAttemptedInitialLocationRecovery = true;
 
-                void rendition.display(nextRecovery.cfi).catch(() => {
-                  // Ignore one-off recovery failures and keep the current rendered location.
-                });
+                beginInitialRestorePhase();
+                void rendition.display(nextRecovery.cfi)
+                  .catch(() => {
+                    // Ignore one-off recovery failures and keep the current rendered location.
+                  })
+                  .finally(() => {
+                    scheduleRestoreGuardRelease();
+                  });
 
                 return;
               }
             }
           }
 
-          // Save and compute progress from the same visible anchor to improve resume precision.
-          saveProgressForCfi(
-            currentLocationCfi,
-            currentLocationCfi,
-            fallbackProgressPercentage,
-          );
+          if (isRestoringInitialLocationRef.current || isApplyingReaderSettingsRef.current) {
+            return;
+          }
+
+          const pendingNavigationReason = pendingNavigationReasonRef.current;
+
+          if (pendingNavigationReason === "next" || pendingNavigationReason === "prev") {
+            clearPendingNavigationReason();
+            void saveStableReadingProgress(pendingNavigationReason);
+            return;
+          }
+
+          clearStableReadingDebounce();
+          const expectedStableLocation = currentLocationCfi;
+
+          stableReadingTimerRef.current = setTimeout(() => {
+            stableReadingTimerRef.current = null;
+
+            if (isCancelled) {
+              return;
+            }
+
+            if (isRestoringInitialLocationRef.current || isApplyingReaderSettingsRef.current) {
+              return;
+            }
+
+            if (latestRestoreLocationRef.current !== expectedStableLocation) {
+              return;
+            }
+
+            void saveStableReadingProgress("stable_reading");
+          }, STABLE_READING_SAVE_DEBOUNCE_MS);
         };
 
         clickHandler = (...args: unknown[]) => {
@@ -1458,9 +1490,12 @@ export function EpubReader({
               }
 
               try {
+                beginInitialRestorePhase();
                 await rendition.display(correctedCfi);
               } catch {
                 // Keep the first restored location if percentage-based correction fails.
+              } finally {
+                scheduleRestoreGuardRelease();
               }
             };
 
@@ -1473,10 +1508,19 @@ export function EpubReader({
             }
 
             if (locationsReadyRef.current) {
-              const currentCfi = getCurrentRenditionCfi(renditionRef.current);
+              const currentPayload = getCurrentRenditionLocationPayload(renditionRef.current);
 
-              if (currentCfi) {
-                saveProgressForCfi(currentCfi, currentCfi);
+              if (currentPayload) {
+                const currentCfi = getStableStartCfi(currentPayload);
+                const fallbackProgressPercentage = getRelocatedFallbackProgress(currentPayload);
+
+                if (currentCfi) {
+                  updateLatestLocationSnapshot(
+                    currentCfi,
+                    fallbackProgressPercentage ?? latestProgressPercentageRef.current,
+                    currentPayload,
+                  );
+                }
               }
             }
           } catch (error) {
@@ -1520,6 +1564,7 @@ export function EpubReader({
         resizeRendition = handleResize;
 
         if (initialLocation) {
+          beginInitialRestorePhase();
           try {
             await rendition.display(initialLocation);
           } catch {
@@ -1532,6 +1577,8 @@ export function EpubReader({
             } else {
               await rendition.display();
             }
+          } finally {
+            scheduleRestoreGuardRelease();
           }
         } else {
           await rendition.display();
@@ -1577,13 +1624,12 @@ export function EpubReader({
 
     return () => {
       isCancelled = true;
-      window.removeEventListener("pagehide", handlePageHide);
-      if (saveProgressTimerRef.current) {
-        clearTimeout(saveProgressTimerRef.current);
-        saveProgressTimerRef.current = null;
-      }
-      captureLatestLocationSnapshot();
-      flushLatestProgress(true);
+      clearStableReadingDebounce();
+      clearPendingNavigationReason();
+      clearRestoreGuardTimer();
+      clearReaderSettingsGuardTimer();
+      isRestoringInitialLocationRef.current = false;
+      isApplyingReaderSettingsRef.current = false;
       abortController.abort();
       isRenditionReadyRef.current = false;
       locationsReadyRef.current = false;
@@ -1609,10 +1655,15 @@ export function EpubReader({
     };
   }, [
     bookId,
+    clearPendingNavigationReason,
     clearPendingDesktopClickToggle,
+    clearReaderSettingsGuardTimer,
+    clearRestoreGuardTimer,
+    clearStableReadingDebounce,
     fileUrl,
     initialLocation,
     initialProgressPercentage,
+    scheduleRestoreGuardRelease,
     toggleReaderUi,
   ]);
 
@@ -1623,12 +1674,15 @@ export function EpubReader({
 
     try {
       hasUserNavigatedRef.current = true;
+      clearStableReadingDebounce();
+      setPendingNavigationReason("prev");
       clearSelection();
       await renditionRef.current.prev();
     } catch {
+      clearPendingNavigationReason();
       setErrorMessage("Could not navigate to the previous page.");
     }
-  }, [clearSelection]);
+  }, [clearPendingNavigationReason, clearSelection, clearStableReadingDebounce, setPendingNavigationReason]);
 
   const goToNextPage = useCallback(async () => {
     if (!renditionRef.current) {
@@ -1637,12 +1691,15 @@ export function EpubReader({
 
     try {
       hasUserNavigatedRef.current = true;
+      clearStableReadingDebounce();
+      setPendingNavigationReason("next");
       clearSelection();
       await renditionRef.current.next();
     } catch {
+      clearPendingNavigationReason();
       setErrorMessage("Could not navigate to the next page.");
     }
-  }, [clearSelection]);
+  }, [clearPendingNavigationReason, clearSelection, clearStableReadingDebounce, setPendingNavigationReason]);
 
   return (
     <section

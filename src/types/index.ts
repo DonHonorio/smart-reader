@@ -80,6 +80,8 @@ export type CheckoutStatus = "success" | "cancelled";
 
 export type ReaderTheme = "light" | "dark" | "sepia";
 
+export type ReadingProgressSaveReason = "next" | "prev" | "stable_reading" | "manual";
+
 export type ReaderPreferences = {
   theme: ReaderTheme;
   fontSize: number;
@@ -101,6 +103,9 @@ export type ReadingProgress = {
   book_id: string;
   current_location: string | null;
   progress_percentage: number;
+  chapter_href: string | null;
+  save_reason: ReadingProgressSaveReason | null;
+  last_stable_at: string | null;
   updated_at: string;
 };
 
@@ -131,12 +136,17 @@ export type DashboardData = {
 export type ReadingProgressResponse = {
   currentLocation: string | null;
   progressPercentage: number;
+  chapterHref: string | null;
+  saveReason: ReadingProgressSaveReason | null;
+  lastStableAt: string | null;
 };
 
 export type UpsertReadingProgressRequest = {
   bookId: string;
   currentLocation: string;
-  progressPercentage?: number;
+  progressPercentage: number;
+  chapterHref?: string | null;
+  saveReason?: ReadingProgressSaveReason;
 };
 
 export type TranslateRequestBody = {
