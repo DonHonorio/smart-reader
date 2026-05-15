@@ -312,12 +312,143 @@ function getRelocatedEndCfi(payload: RelocatedPayload) {
   return normalizeCfi(payload.end?.cfi);
 }
 
+function isDisplayedLastPage(displayed: { page?: unknown; total?: unknown } | undefined) {
+  if (!displayed) {
+    return false;
+  }
+
+  const { page, total } = displayed;
+
+  if (
+    typeof page !== "number" ||
+    typeof total !== "number" ||
+    !Number.isFinite(page) ||
+    !Number.isFinite(total) ||
+    total <= 0
+  ) {
+    return false;
+  }
+
+  return page >= total;
+}
+
+function getCfiSpineKey(cfi: string | null) {
+  if (!cfi) {
+    return null;
+  }
+
+  const matches = cfi.match(/^epubcfi\(([^!]*)!/i);
+  return matches?.[1] ?? null;
+}
+
+function areCfisInDifferentSpines(startCfi: string | null, endCfi: string | null) {
+  const startSpineKey = getCfiSpineKey(startCfi);
+  const endSpineKey = getCfiSpineKey(endCfi);
+
+  if (!startSpineKey || !endSpineKey) {
+    return false;
+  }
+
+  return startSpineKey !== endSpineKey;
+}
+
+function getComparableCfi(cfi: string | null) {
+  const normalized = normalizeCfi(cfi);
+
+  if (!normalized) {
+    return null;
+  }
+
+  return normalized.replace(/\[[^\]]*\]/g, "");
+}
+
+function getCfiPositionVector(cfi: string | null) {
+  const comparableCfi = getComparableCfi(cfi);
+
+  if (!comparableCfi) {
+    return null;
+  }
+
+  const contentPart = comparableCfi.includes("!")
+    ? comparableCfi.slice(comparableCfi.indexOf("!") + 1)
+    : comparableCfi;
+  const numericParts = contentPart.match(/\d+/g);
+
+  if (!numericParts || numericParts.length === 0) {
+    return null;
+  }
+
+  return numericParts.map((value) => Number.parseInt(value, 10));
+}
+
+function compareCfiPosition(leftCfi: string | null, rightCfi: string | null) {
+  const leftComparable = getComparableCfi(leftCfi);
+  const rightComparable = getComparableCfi(rightCfi);
+
+  if (!leftComparable || !rightComparable) {
+    return null;
+  }
+
+  if (areCfisInDifferentSpines(leftComparable, rightComparable)) {
+    return null;
+  }
+
+  const leftVector = getCfiPositionVector(leftComparable);
+  const rightVector = getCfiPositionVector(rightComparable);
+
+  if (!leftVector || !rightVector) {
+    return null;
+  }
+
+  const maxLength = Math.max(leftVector.length, rightVector.length);
+
+  for (let index = 0; index < maxLength; index += 1) {
+    const leftPart = leftVector[index] ?? 0;
+    const rightPart = rightVector[index] ?? 0;
+
+    if (leftPart < rightPart) {
+      return -1;
+    }
+
+    if (leftPart > rightPart) {
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
+function nudgeCfiForward(cfi: string | null, chars = 1) {
+  const normalized = normalizeCfi(cfi);
+
+  if (!normalized || !Number.isFinite(chars) || chars <= 0) {
+    return null;
+  }
+
+  const nextCfi = normalized.replace(/:(\d+)(\)?)$/, (_, offset, closing) => {
+    const parsedOffset = Number.parseInt(offset, 10);
+
+    if (!Number.isFinite(parsedOffset)) {
+      return `:${offset}${closing}`;
+    }
+
+    return `:${parsedOffset + chars}${closing}`;
+  });
+
+  return nextCfi !== normalized ? nextCfi : null;
+}
+
 function getPreferredRelocatedCfi(payload: RelocatedPayload, preferEnd: boolean) {
   const startCfi = getRelocatedStartCfi(payload);
   const endCfi = getRelocatedEndCfi(payload);
 
   if (preferEnd && endCfi) {
-    return endCfi;
+    const endIsLastPageInSection = isDisplayedLastPage(payload.end?.displayed);
+    const crossesSpineBoundary = areCfisInDifferentSpines(startCfi, endCfi);
+
+    if (!endIsLastPageInSection && !crossesSpineBoundary) {
+      return endCfi;
+    }
   }
 
   return startCfi ?? endCfi;
@@ -902,6 +1033,10 @@ export function EpubReader({
     async function mountReader() {
       try {
         let hasAttemptedInitialRestoreCorrection = false;
+        let hasAttemptedInitialLocationRecovery = false;
+        const sanitizedInitialLocation = initialLocation
+          ? sanitizeCfiForDisplay(initialLocation)
+          : null;
 
         const response = await fetch(fileUrl, {
           method: "GET",
@@ -1084,6 +1219,54 @@ export function EpubReader({
 
           if (!currentLocationCfi || isCancelled) {
             return;
+          }
+
+          if (
+            !hasUserNavigatedRef.current &&
+            !hasAttemptedInitialLocationRecovery &&
+            initialLocation
+          ) {
+            const restoreComparison = compareCfiPosition(currentLocationCfi, initialLocation);
+
+            if (restoreComparison !== null && restoreComparison < 0) {
+              const recoveryCandidates: Array<{
+                strategy: "initial" | "sanitized" | "nudged-initial" | "nudged-sanitized";
+                cfi: string | null;
+              }> = [
+                { strategy: "initial", cfi: initialLocation },
+                {
+                  strategy: "sanitized",
+                  cfi:
+                    sanitizedInitialLocation && sanitizedInitialLocation !== initialLocation
+                      ? sanitizedInitialLocation
+                      : null,
+                },
+                { strategy: "nudged-initial", cfi: nudgeCfiForward(initialLocation) },
+                {
+                  strategy: "nudged-sanitized",
+                  cfi: sanitizedInitialLocation
+                    ? nudgeCfiForward(sanitizedInitialLocation)
+                    : null,
+                },
+              ];
+
+              const nextRecovery = recoveryCandidates.find(
+                (candidate): candidate is {
+                  strategy: "initial" | "sanitized" | "nudged-initial" | "nudged-sanitized";
+                  cfi: string;
+                } => typeof candidate.cfi === "string" && candidate.cfi !== currentLocationCfi,
+              );
+
+              if (nextRecovery) {
+                hasAttemptedInitialLocationRecovery = true;
+
+                void rendition.display(nextRecovery.cfi).catch(() => {
+                  // Ignore one-off recovery failures and keep the current rendered location.
+                });
+
+                return;
+              }
+            }
           }
 
           // Save and compute progress from the same visible anchor to improve resume precision.
@@ -1337,8 +1520,6 @@ export function EpubReader({
         resizeRendition = handleResize;
 
         if (initialLocation) {
-          const sanitizedInitialLocation = sanitizeCfiForDisplay(initialLocation);
-
           try {
             await rendition.display(initialLocation);
           } catch {
