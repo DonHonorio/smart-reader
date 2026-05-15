@@ -18,7 +18,7 @@ import type {
   UpsertReadingProgressRequest,
 } from "@/types";
 
-const STABLE_READING_SAVE_DEBOUNCE_MS = 2500;
+const STABLE_READING_SAVE_DEBOUNCE_MS = 2000;
 const LOCATIONS_GENERATE_CHARS = 1000;
 const LOCATIONS_CACHE_VERSION = "v3";
 const LOCATIONS_CACHE_KEY_PREFIX = "smart-reader:locations:";
@@ -1282,8 +1282,26 @@ export function EpubReader({
           const pendingNavigationReason = pendingNavigationReasonRef.current;
 
           if (pendingNavigationReason === "next" || pendingNavigationReason === "prev") {
+            clearStableReadingDebounce();
+            const expectedStableLocation = currentLocationCfi;
             clearPendingNavigationReason();
-            void saveStableReadingProgress(pendingNavigationReason);
+            stableReadingTimerRef.current = setTimeout(() => {
+              stableReadingTimerRef.current = null;
+
+              if (isCancelled) {
+                return;
+              }
+
+              if (isRestoringInitialLocationRef.current || isApplyingReaderSettingsRef.current) {
+                return;
+              }
+
+              if (latestRestoreLocationRef.current !== expectedStableLocation) {
+                return;
+              }
+
+              void saveStableReadingProgress(pendingNavigationReason);
+            }, STABLE_READING_SAVE_DEBOUNCE_MS);
             return;
           }
 
