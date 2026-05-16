@@ -80,6 +80,10 @@ const READER_THEME_PALETTE: Record<
   },
 };
 
+const EPUB_SELECTION_BACKGROUND = "#f1cafc";
+const DARK_THEME_SELECTION_TEXT = "#111827";
+const EPUB_SELECTION_STYLE_ELEMENT_ID = "smart-reader-selection-style";
+
 type RelocatedPayload = {
   percentage?: unknown;
   start?: {
@@ -131,6 +135,10 @@ type RenditionContentHooksApi = {
 
 type RenditionSpreadApi = {
   spread?: (value: "none" | "auto" | "always") => unknown;
+};
+
+type RenditionContentsApi = {
+  getContents?: () => unknown;
 };
 
 type SelectionAnchor = {
@@ -673,6 +681,75 @@ function getRenditionContentHooks(rendition: Rendition | null) {
   return contentHooks as RenditionContentHooksApi;
 }
 
+function getRenditionContents(rendition: Rendition | null) {
+  if (!rendition) {
+    return [] as EpubContents[];
+  }
+
+  const getContents = (rendition as unknown as RenditionContentsApi).getContents;
+
+  if (typeof getContents !== "function") {
+    return [] as EpubContents[];
+  }
+
+  try {
+    const contents = getContents();
+
+    if (Array.isArray(contents)) {
+      return contents as EpubContents[];
+    }
+
+    if (contents && typeof contents === "object") {
+      return [contents as EpubContents];
+    }
+
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+function buildSelectionCss(theme: ReaderTheme) {
+  const palette = READER_THEME_PALETTE[theme];
+  const selectionTextColor = theme === "dark" ? DARK_THEME_SELECTION_TEXT : palette.epubText;
+
+  return [
+    "::selection {",
+    `  background: ${EPUB_SELECTION_BACKGROUND};`,
+    `  color: ${selectionTextColor};`,
+    "}",
+    "::-moz-selection {",
+    `  background: ${EPUB_SELECTION_BACKGROUND};`,
+    `  color: ${selectionTextColor};`,
+    "}",
+  ].join("\n");
+}
+
+function applySelectionStylesToContents(contents: EpubContents, theme: ReaderTheme) {
+  const selectionDocument = contents.window.document;
+  const selectionRoot = selectionDocument.head ?? selectionDocument.documentElement;
+
+  if (!selectionRoot) {
+    return;
+  }
+
+  let styleElement = selectionDocument.getElementById(EPUB_SELECTION_STYLE_ELEMENT_ID);
+
+  if (!styleElement) {
+    styleElement = selectionDocument.createElement("style");
+    styleElement.id = EPUB_SELECTION_STYLE_ELEMENT_ID;
+    selectionRoot.appendChild(styleElement);
+  }
+
+  styleElement.textContent = buildSelectionCss(theme);
+}
+
+function applySelectionStylesToRendition(rendition: Rendition | null, theme: ReaderTheme) {
+  for (const contents of getRenditionContents(rendition)) {
+    applySelectionStylesToContents(contents, theme);
+  }
+}
+
 function getThemeRules(theme: ReaderTheme) {
   const palette = READER_THEME_PALETTE[theme];
   const themeClass = EPUB_THEME_NAMES[theme];
@@ -1016,6 +1093,7 @@ export function EpubReader({
     isApplyingReaderSettingsRef.current = true;
     clearStableReadingDebounce();
     applyReaderAppearance(rendition, theme, fontSize);
+    applySelectionStylesToRendition(rendition, theme);
     scheduleReaderSettingsGuardRelease();
   }, [clearStableReadingDebounce, scheduleReaderSettingsGuardRelease, theme, fontSize]);
 
@@ -1524,6 +1602,7 @@ export function EpubReader({
 
         const renditionContentHooks = getRenditionContentHooks(rendition);
         renditionContentHooks?.register((contents) => {
+          applySelectionStylesToContents(contents, themeRef.current);
           registerSelectionReleaseTracking(contents);
 
           // Simple touch-based swipe for page navigation on mobile
