@@ -39,6 +39,7 @@ const PANEL_VIEWPORT_MARGIN = 12;
 const PANEL_SELECTION_GAP = 10;
 const DESKTOP_PANEL_MAX_WIDTH = 420;
 const MOBILE_PANEL_MAX_HEIGHT_VH = 40;
+const MOBILE_SWIPE_THRESHOLD_PX = 40;
 
 const EPUB_THEME_NAMES: Record<ReaderTheme, string> = {
   light: "smart-reader-light",
@@ -776,6 +777,22 @@ function getContainerDimensions(container: HTMLDivElement | null) {
   return { width, height };
 }
 
+function getTouchByIdentifier(touches: TouchList, identifier: number | null) {
+  if (identifier === null) {
+    return touches.item(0);
+  }
+
+  for (let index = 0; index < touches.length; index += 1) {
+    const touch = touches.item(index);
+
+    if (touch && touch.identifier === identifier) {
+      return touch;
+    }
+  }
+
+  return null;
+}
+
 export function EpubReader({
   fileUrl,
   bookId,
@@ -1508,6 +1525,66 @@ export function EpubReader({
         const renditionContentHooks = getRenditionContentHooks(rendition);
         renditionContentHooks?.register((contents) => {
           registerSelectionReleaseTracking(contents);
+
+          // Simple touch-based swipe for page navigation on mobile
+          let touchStartX: number | null = null;
+          let touchStartY: number | null = null;
+
+          const onTouchStart = (event: TouchEvent) => {
+            if (event.touches.length !== 1) {
+              touchStartX = null;
+              touchStartY = null;
+              return;
+            }
+
+            touchStartX = event.touches[0].clientX;
+            touchStartY = event.touches[0].clientY;
+          };
+
+          const onTouchEnd = (event: TouchEvent) => {
+            if (touchStartX === null || touchStartY === null || event.changedTouches.length === 0) {
+              return;
+            }
+
+            const endX = event.changedTouches[0].clientX;
+            const endY = event.changedTouches[0].clientY;
+            const deltaX = endX - touchStartX;
+            const deltaY = endY - touchStartY;
+
+            // Ignore if primarily vertical swipe
+            if (Math.abs(deltaY) > Math.abs(deltaX)) {
+              return;
+            }
+
+            // Require minimum horizontal movement (40px)
+            if (Math.abs(deltaX) < MOBILE_SWIPE_THRESHOLD_PX) {
+              return;
+            }
+
+            if (selectedTextRef.current) {
+              return;
+            }
+
+            if (deltaX > 0) {
+              // Swiped right → Previous page
+              void rendition.prev();
+            } else {
+              // Swiped left → Next page
+              void rendition.next();
+            }
+
+            touchStartX = null;
+            touchStartY = null;
+          };
+
+          contents.document.addEventListener("touchstart", onTouchStart, { passive: true });
+          contents.document.addEventListener("touchend", onTouchEnd, { passive: true });
+
+          // Cleanup on unmount
+          selectionReleaseCleanupCallbacks.push(() => {
+            contents.document.removeEventListener("touchstart", onTouchStart);
+            contents.document.removeEventListener("touchend", onTouchEnd);
+          });
         });
 
         bookRef.current = book;
@@ -2094,7 +2171,9 @@ export function EpubReader({
         <div
           ref={containerRef}
           className="h-full w-full min-h-0 overflow-hidden"
-          style={{ backgroundColor: themePalette.epubBackground }}
+          style={{
+            backgroundColor: themePalette.epubBackground,
+          }}
         />
 
         {isLoading && (
