@@ -269,62 +269,104 @@ export function SelectionPanel({
   return (
     <section
       className={cn(
-        "w-full overflow-auto border p-3 shadow-xl",
+        "w-full overflow-auto border shadow-xl",
         isMobileVariant
-          ? "max-h-[40vh] rounded-2xl border-slate-200 bg-white"
-          : "max-h-[50vh] rounded-2xl border-slate-200/90 bg-white/95 backdrop-blur",
+          ? "max-h-[34vh] rounded-xl border-slate-200 bg-white p-2.5"
+          : "max-h-[50vh] rounded-2xl border-slate-200/90 bg-white/95 p-3 backdrop-blur",
       )}
     >
-      <div className="space-y-2">
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">SELECTED TEXT</p>
-        <p className="max-h-20 overflow-auto rounded-md bg-slate-50 px-2 py-1.5 text-sm text-slate-800">
+      <div className={cn("space-y-2", isMobileVariant && "space-y-1") }>
+        {!isMobileVariant && (
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">SELECTED TEXT</p>
+        )}
+        <p
+          className={cn(
+            "overflow-auto rounded-md bg-slate-50 text-slate-800",
+            isMobileVariant ? "max-h-16 px-2 py-1.5 text-xs" : "max-h-20 px-2 py-1.5 text-sm",
+          )}
+        >
           {selectedText}
         </p>
       </div>
 
       {contextSentence && (
-        <div className="mt-3 space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Context</p>
-          <p className="max-h-24 overflow-auto rounded-md bg-slate-50 px-2 py-1.5 text-sm text-slate-700">
+        <div className={cn("space-y-2", isMobileVariant ? "mt-2 space-y-1" : "mt-3")}>
+          {!isMobileVariant && (
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Context</p>
+          )}
+          <p
+            className={cn(
+              "overflow-auto rounded-md bg-slate-50 text-slate-700",
+              isMobileVariant ? "max-h-20 px-2 py-1.5 text-xs" : "max-h-24 px-2 py-1.5 text-sm",
+            )}
+          >
             {contextSentence}
           </p>
         </div>
       )}
 
       {translation && (
-        <div className="mt-3 space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+        <div className={cn("space-y-2", isMobileVariant ? "mt-2 space-y-1" : "mt-3")}>
+          <p
+            className={cn(
+              "font-semibold uppercase text-slate-500",
+              isMobileVariant ? "text-[11px] tracking-[0.08em]" : "text-xs tracking-wide",
+            )}
+          >
             Translated expression
           </p>
-          <p className="max-h-16 overflow-auto rounded-md bg-slate-50 px-2 py-1.5 text-sm text-slate-800">
+          <p
+            className={cn(
+              "overflow-auto rounded-md bg-slate-50 text-slate-800",
+              isMobileVariant ? "max-h-14 px-2 py-1.5 text-sm leading-5" : "max-h-16 px-2 py-1.5 text-sm",
+            )}
+          >
             {translation.surfaceUnit}
           </p>
 
           {translation.isExpanded && (
-            <p className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
+            <p
+              className={cn(
+                "rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-amber-800",
+                isMobileVariant ? "text-[11px] leading-4" : "text-xs",
+              )}
+            >
               Expression detected: translated &quot;{translation.surfaceUnit}&quot;, not just &quot;
               {translation.selectedText}
               &quot;.
             </p>
           )}
 
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Translation</p>
-          <p className="max-h-24 overflow-auto rounded-md bg-emerald-50 px-2 py-1.5 text-sm text-emerald-800">
+          {!isMobileVariant && (
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Translation</p>
+          )}
+          <p
+            className={cn(
+              "overflow-auto rounded-md bg-emerald-50 text-emerald-800",
+              isMobileVariant ? "max-h-20 px-2 py-1.5 text-xs" : "max-h-24 px-2 py-1.5 text-sm",
+            )}
+          >
             {translation.translation}
           </p>
         </div>
       )}
 
       {errorMessage && (
-        <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-sm text-red-700">
+        <p
+          className={cn(
+            "rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-red-700",
+            isMobileVariant ? "mt-2 text-xs" : "mt-3 text-sm",
+          )}
+        >
           {errorMessage}
         </p>
       )}
 
-      <div className="mt-3 flex flex-wrap gap-2">
+      <div className={cn("flex flex-wrap", isMobileVariant ? "mt-2 gap-1.5" : "mt-3 gap-2")}>
         <Button
           variant="secondary"
           size="sm"
+          className={cn(isMobileVariant && "h-8 rounded-md px-2.5 text-xs")}
           onClick={handleTranslate}
           disabled={!selectedText || isTranslating || isSaving || hasSuccessfulTranslation}
         >
@@ -333,6 +375,7 @@ export function SelectionPanel({
         <Button
           variant="secondary"
           size="sm"
+          className={cn(isMobileVariant && "h-8 rounded-md px-2.5 text-xs")}
           onClick={handleSave}
           disabled={!translation || isSaving || isSaved}
         >
@@ -341,13 +384,23 @@ export function SelectionPanel({
       </div>
 
       {saveSuccessMessage && (
-        <p className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-700">
+        <p
+          className={cn(
+            "mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-emerald-700",
+            isMobileVariant ? "text-[11px]" : "text-xs",
+          )}
+        >
           {saveSuccessMessage}
         </p>
       )}
 
       {saveErrorMessage && (
-        <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700">
+        <p
+          className={cn(
+            "mt-2 rounded-md border border-red-200 bg-red-50 px-2 py-1 text-red-700",
+            isMobileVariant ? "text-[11px]" : "text-xs",
+          )}
+        >
           {saveErrorMessage}
         </p>
       )}
