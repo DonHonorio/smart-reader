@@ -35,7 +35,7 @@ export function ReaderTopBar({
         <button
           type="button"
           onClick={onBack}
-          className="inline-flex h-9 select-none items-center rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100"
+          className="inline-flex h-9 select-none items-center rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 md:cursor-pointer"
         >
           Library
         </button>
@@ -50,7 +50,7 @@ export function ReaderTopBar({
         <button
           type="button"
           onClick={onOpenSettings}
-          className="inline-flex h-9 select-none items-center rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100"
+          className="inline-flex h-9 select-none items-center rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100 md:cursor-pointer"
           aria-label="Open reader settings"
         >
           Aa

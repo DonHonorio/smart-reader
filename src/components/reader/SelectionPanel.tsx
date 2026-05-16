@@ -277,7 +277,9 @@ export function SelectionPanel({
     >
       <div className={cn("space-y-2", isMobileVariant && "space-y-1") }>
         {!isMobileVariant && (
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">SELECTED TEXT</p>
+          <p className="select-none text-xs font-semibold uppercase tracking-wide text-slate-500">
+            SELECTED TEXT
+          </p>
         )}
         <p
           className={cn(
@@ -292,7 +294,9 @@ export function SelectionPanel({
       {contextSentence && (
         <div className={cn("space-y-2", isMobileVariant ? "mt-2 space-y-1" : "mt-3")}>
           {!isMobileVariant && (
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Context</p>
+            <p className="select-none text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Context
+            </p>
           )}
           <p
             className={cn(
@@ -309,7 +313,7 @@ export function SelectionPanel({
         <div className={cn("space-y-2", isMobileVariant ? "mt-2 space-y-1" : "mt-3")}>
           <p
             className={cn(
-              "font-semibold uppercase text-slate-500",
+              "select-none font-semibold uppercase text-slate-500",
               isMobileVariant ? "text-[11px] tracking-[0.08em]" : "text-xs tracking-wide",
             )}
           >
@@ -338,7 +342,9 @@ export function SelectionPanel({
           )}
 
           {!isMobileVariant && (
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Translation</p>
+            <p className="select-none text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Translation
+            </p>
           )}
           <p
             className={cn(
@@ -366,7 +372,10 @@ export function SelectionPanel({
         <Button
           variant="secondary"
           size="sm"
-          className={cn(isMobileVariant && "h-8 rounded-md px-2.5 text-xs")}
+          className={cn(
+            "select-none enabled:cursor-pointer",
+            isMobileVariant && "h-8 rounded-md px-2.5 text-xs",
+          )}
           onClick={handleTranslate}
           disabled={!selectedText || isTranslating || isSaving || hasSuccessfulTranslation}
         >
@@ -375,7 +384,10 @@ export function SelectionPanel({
         <Button
           variant="secondary"
           size="sm"
-          className={cn(isMobileVariant && "h-8 rounded-md px-2.5 text-xs")}
+          className={cn(
+            "select-none enabled:cursor-pointer",
+            isMobileVariant && "h-8 rounded-md px-2.5 text-xs",
+          )}
           onClick={handleSave}
           disabled={!translation || isSaving || isSaved}
         >

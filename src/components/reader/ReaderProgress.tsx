@@ -22,7 +22,7 @@ export function ReaderProgress({ progressPercentage, compact = false, className 
     return (
       <span
         className={cn(
-          "rounded-full border border-slate-200 bg-white/90 px-2.5 py-1 text-xs font-semibold text-slate-700",
+          "select-none rounded-full border border-slate-200 bg-white/90 px-2.5 py-1 text-xs font-semibold text-slate-700",
           className,
         )}
       >
@@ -34,7 +34,7 @@ export function ReaderProgress({ progressPercentage, compact = false, className 
   return (
     <div
       className={cn(
-        "flex min-w-24 items-center gap-2 rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 shadow-sm",
+        "select-none flex min-w-24 items-center gap-2 rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 shadow-sm",
         className,
       )}
     >
