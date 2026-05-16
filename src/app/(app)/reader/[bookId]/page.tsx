@@ -15,17 +15,29 @@ type ReaderFallbackProps = {
   title: string;
   description: string;
   actionLabel: string;
+  retryHref?: string;
 };
 
-function ReaderFallback({ title, description, actionLabel }: ReaderFallbackProps) {
+function ReaderFallback({ title, description, actionLabel, retryHref }: ReaderFallbackProps) {
   return (
     <section className="flex h-full min-h-0 w-full items-center justify-center bg-[#f6efe3] px-4">
       <div className="w-full max-w-sm rounded-2xl border border-slate-200/90 bg-white/90 p-5 shadow-sm backdrop-blur">
         <h1 className="text-base font-semibold tracking-tight text-slate-900">{title}</h1>
         <p className="mt-2 text-sm text-slate-600">{description}</p>
-        <Link href={ROUTES.library} className={buttonClassNames({ variant: "secondary", className: "mt-4 w-full" })}>
+        <Link
+          href={ROUTES.library}
+          className={buttonClassNames({ variant: "secondary", className: "mt-4 w-full" })}
+        >
           {actionLabel}
         </Link>
+        {retryHref ? (
+          <Link
+            href={retryHref}
+            className={buttonClassNames({ variant: "ghost", className: "mt-2 w-full" })}
+          >
+            Try again
+          </Link>
+        ) : null}
       </div>
     </section>
   );
@@ -38,9 +50,9 @@ export default async function ReaderBookPage({ params }: ReaderBookPageProps) {
   if (!book) {
     return (
       <ReaderFallback
-        title="Book not found"
-        description="We could not find a readable book for your account."
-        actionLabel="Back to library"
+        title="We could not load this book."
+        description="Book not found for your account."
+        actionLabel="Back to Library"
       />
     );
   }
@@ -52,9 +64,9 @@ export default async function ReaderBookPage({ params }: ReaderBookPageProps) {
   if (!book.file_path) {
     return (
       <ReaderFallback
-        title="This book has no EPUB file yet"
-        description="Upload the EPUB file from your library and try again."
-        actionLabel="Go to library"
+        title="This book file is missing."
+        description="This EPUB entry has no file path yet."
+        actionLabel="Back to Library"
       />
     );
   }
@@ -67,9 +79,10 @@ export default async function ReaderBookPage({ params }: ReaderBookPageProps) {
   if (signedUrlError || !signedData?.signedUrl) {
     return (
       <ReaderFallback
-        title="Could not open this EPUB"
-        description="The temporary file URL could not be generated. Please try again from your library."
-        actionLabel="Back to library"
+        title="We could not load this book."
+        description="This reading link expired. Please reopen the book from your library."
+        actionLabel="Back to Library"
+        retryHref={ROUTES.reader(book.id)}
       />
     );
   }

@@ -15,7 +15,6 @@ type SelectionPanelProps = {
   contextSentence: string | null;
   sourceLanguage: string;
   targetLanguage: string;
-  onClear: () => void;
   variant?: "desktop" | "mobile";
 };
 
@@ -78,7 +77,6 @@ export function SelectionPanel({
   contextSentence,
   sourceLanguage,
   targetLanguage,
-  onClear,
   variant = "desktop",
 }: SelectionPanelProps) {
   const [isTranslating, setIsTranslating] = useState(false);
@@ -104,6 +102,7 @@ export function SelectionPanel({
 
   const translation = translationState?.key === selectionKey ? translationState.value : null;
   const errorMessage = errorState?.key === selectionKey ? errorState.message : null;
+  const hasSuccessfulTranslation = Boolean(translation) && !errorMessage;
   const currentSaveState = saveState?.key === selectionKey ? saveState : null;
   const isSaved =
     currentSaveState?.status === "created" ||
@@ -265,13 +264,6 @@ export function SelectionPanel({
     }
   }
 
-  function handleClear() {
-    setTranslationState(null);
-    setErrorState(null);
-    setSaveState(null);
-    onClear();
-  }
-
   const isMobileVariant = variant === "mobile";
 
   return (
@@ -279,19 +271,12 @@ export function SelectionPanel({
       className={cn(
         "w-full overflow-auto border p-3 shadow-xl",
         isMobileVariant
-          ? "max-h-[48vh] rounded-2xl border-slate-200 bg-white"
+          ? "max-h-[40vh] rounded-2xl border-slate-200 bg-white"
           : "max-h-[50vh] rounded-2xl border-slate-200/90 bg-white/95 backdrop-blur",
       )}
     >
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selection</p>
-        <Button variant="ghost" size="sm" onClick={handleClear}>
-          Close
-        </Button>
-      </div>
-
       <div className="space-y-2">
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selected text</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">SELECTED TEXT</p>
         <p className="max-h-20 overflow-auto rounded-md bg-slate-50 px-2 py-1.5 text-sm text-slate-800">
           {selectedText}
         </p>
@@ -341,9 +326,9 @@ export function SelectionPanel({
           variant="secondary"
           size="sm"
           onClick={handleTranslate}
-          disabled={!selectedText || isTranslating || isSaving}
+          disabled={!selectedText || isTranslating || isSaving || hasSuccessfulTranslation}
         >
-          {isTranslating ? "Translating..." : "Translate"}
+          {isTranslating ? "Translating..." : hasSuccessfulTranslation ? "Translated" : "Translate"}
         </Button>
         <Button
           variant="secondary"

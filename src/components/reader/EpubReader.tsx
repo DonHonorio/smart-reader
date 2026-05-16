@@ -35,6 +35,10 @@ const READER_FONT_SIZE_STEP = 10;
 const DESKTOP_SPREAD_BREAKPOINT = 1024;
 const DESKTOP_SINGLE_CLICK_DELAY_MS = 220;
 const INITIAL_RESTORE_PROGRESS_DELTA_THRESHOLD = 0.4;
+const PANEL_VIEWPORT_MARGIN = 12;
+const PANEL_SELECTION_GAP = 10;
+const DESKTOP_PANEL_MAX_WIDTH = 420;
+const MOBILE_PANEL_MAX_HEIGHT_VH = 40;
 
 const EPUB_THEME_NAMES: Record<ReaderTheme, string> = {
   light: "smart-reader-light",
@@ -120,8 +124,18 @@ type RenditionEventApi = {
   off: (eventName: string, handler: RenditionEventHandler) => unknown;
 };
 
+type RenditionContentHooksApi = {
+  register: (handler: (contents: EpubContents) => void) => unknown;
+};
+
 type RenditionSpreadApi = {
   spread?: (value: "none" | "auto" | "always") => unknown;
+};
+
+type SelectionAnchor = {
+  centerX: number;
+  top: number;
+  bottom: number;
 };
 
 function getLocationsCacheKey(bookId: string) {
@@ -506,14 +520,53 @@ function getCurrentRenditionCfi(rendition: Rendition | null) {
 
 function getLoadErrorMessage(status: number) {
   if (status === 400 || status === 401 || status === 403) {
-    return "Reader session expired. Go back to Library and reopen the book.";
+    return "This reading link expired. Please reopen the book from your library.";
   }
 
   if (status === 404) {
-    return "EPUB file not found. Reopen the book from Library.";
+    return "The EPUB file could not be opened.";
   }
 
-  return "Could not load this EPUB file right now. Please try again from Library.";
+  return "We could not load this book.";
+}
+
+function getSelectionAnchor(selection: Selection, contents: EpubContents) {
+  if (selection.rangeCount === 0) {
+    return null;
+  }
+
+  const range = selection.getRangeAt(0);
+  let rangeRect = range.getBoundingClientRect();
+
+  if (rangeRect.width === 0 || rangeRect.height === 0) {
+    const rangeRects = range.getClientRects();
+    const firstRenderableRect = Array.from(rangeRects).find(
+      (rect) => rect.width > 0 || rect.height > 0,
+    );
+
+    if (!firstRenderableRect) {
+      return null;
+    }
+
+    rangeRect = firstRenderableRect;
+  }
+
+  const frameElement = contents.window.frameElement;
+
+  if (!frameElement || !(frameElement instanceof Element)) {
+    return null;
+  }
+
+  const frameRect = frameElement.getBoundingClientRect();
+  const centerX = frameRect.left + rangeRect.left + rangeRect.width / 2;
+  const top = frameRect.top + rangeRect.top;
+  const bottom = frameRect.top + rangeRect.bottom;
+
+  if (![centerX, top, bottom].every((value) => Number.isFinite(value))) {
+    return null;
+  }
+
+  return { centerX, top, bottom } as SelectionAnchor;
 }
 
 function isReaderTheme(value: unknown): value is ReaderTheme {
@@ -597,6 +650,26 @@ function getRenditionThemes(rendition: Rendition | null) {
 
 function getRenditionEvents(rendition: Rendition) {
   return rendition as unknown as RenditionEventApi;
+}
+
+function getRenditionContentHooks(rendition: Rendition | null) {
+  if (!rendition) {
+    return null;
+  }
+
+  const contentHooks = (
+    rendition as unknown as {
+      hooks?: {
+        content?: Partial<RenditionContentHooksApi>;
+      };
+    }
+  ).hooks?.content;
+
+  if (!contentHooks || typeof contentHooks.register !== "function") {
+    return null;
+  }
+
+  return contentHooks as RenditionContentHooksApi;
 }
 
 function getThemeRules(theme: ReaderTheme) {
@@ -715,6 +788,7 @@ export function EpubReader({
 }: EpubReaderProps) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const panelContainerRef = useRef<HTMLDivElement | null>(null);
   const bookRef = useRef<EpubBook | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
   const selectedContentsRef = useRef<EpubContents | null>(null);
@@ -752,12 +826,23 @@ export function EpubReader({
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [theme, setTheme] = useState<ReaderTheme>(DEFAULT_READER_THEME);
   const [fontSize, setFontSize] = useState(DEFAULT_READER_FONT_SIZE);
+  const [selectionAnchor, setSelectionAnchor] = useState<SelectionAnchor | null>(null);
   const [isMobileViewport, setIsMobileViewport] = useState(() => {
     if (typeof window === "undefined") {
       return true;
     }
 
     return window.innerWidth < DESKTOP_SPREAD_BREAKPOINT;
+  });
+  const [viewportSize, setViewportSize] = useState(() => {
+    if (typeof window === "undefined") {
+      return { width: 0, height: 0 };
+    }
+
+    return {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    };
   });
 
   const themePalette = useMemo(() => READER_THEME_PALETTE[theme], [theme]);
@@ -893,6 +978,7 @@ export function EpubReader({
 
     const updateViewportMode = () => {
       setIsMobileViewport(window.innerWidth < DESKTOP_SPREAD_BREAKPOINT);
+      setViewportSize({ width: window.innerWidth, height: window.innerHeight });
     };
 
     updateViewportMode();
@@ -946,6 +1032,7 @@ export function EpubReader({
     nativeSelection?.removeAllRanges();
     setSelectedText("");
     setContextSentence(null);
+    setSelectionAnchor(null);
   }, []);
 
   const clearPendingDesktopClickToggle = useCallback(() => {
@@ -992,6 +1079,137 @@ export function EpubReader({
     router.push(ROUTES.library);
   }, [router]);
 
+  const retryReaderLoad = useCallback(() => {
+    setErrorMessage(null);
+    clearSelection();
+    router.refresh();
+  }, [clearSelection, router]);
+
+  const clearPanelFromOutsideInteraction = useCallback(() => {
+    clearPendingDesktopClickToggle();
+    clearSelection();
+  }, [clearPendingDesktopClickToggle, clearSelection]);
+
+  const panelLayout = useMemo(() => {
+    const visibleTopOffset = isReaderUiVisible ? 86 : PANEL_VIEWPORT_MARGIN;
+
+    if (isMobileViewport) {
+      const width = Math.max(260, viewportSize.width - 32);
+      const maxPanelHeight = Math.max(220, Math.round((viewportSize.height * MOBILE_PANEL_MAX_HEIGHT_VH) / 100));
+
+      if (!selectionAnchor || viewportSize.width <= 0 || viewportSize.height <= 0) {
+        return {
+          wrapperClassName: "fixed z-70 md:hidden",
+          style: {
+            left: 16,
+            width: "calc(100vw - 32px)",
+            maxWidth: "calc(100vw - 32px)",
+            maxHeight: `${maxPanelHeight}px`,
+            bottom: isReaderUiVisible
+              ? "calc(env(safe-area-inset-bottom) + 5.75rem)"
+              : "calc(env(safe-area-inset-bottom) + 0.75rem)",
+          } as const,
+          variant: "mobile" as const,
+        };
+      }
+
+      const estimatedHeight = Math.min(maxPanelHeight, 320);
+      const preferredTop = selectionAnchor.top - estimatedHeight - PANEL_SELECTION_GAP;
+      const belowTop = selectionAnchor.bottom + PANEL_SELECTION_GAP;
+      const fitsAbove = preferredTop >= visibleTopOffset;
+      const maxTop = Math.max(visibleTopOffset, viewportSize.height - estimatedHeight - PANEL_VIEWPORT_MARGIN);
+      const top = Math.min(Math.max(fitsAbove ? preferredTop : belowTop, visibleTopOffset), maxTop);
+      const left = Math.min(
+        Math.max(selectionAnchor.centerX - width / 2, PANEL_VIEWPORT_MARGIN),
+        viewportSize.width - width - PANEL_VIEWPORT_MARGIN,
+      );
+
+      return {
+        wrapperClassName: "fixed z-70 md:hidden",
+        style: {
+          left,
+          top,
+          width: "calc(100vw - 32px)",
+          maxWidth: "calc(100vw - 32px)",
+          maxHeight: `${maxPanelHeight}px`,
+        } as const,
+        variant: "mobile" as const,
+      };
+    }
+
+    const width = Math.min(DESKTOP_PANEL_MAX_WIDTH, Math.max(320, viewportSize.width - PANEL_VIEWPORT_MARGIN * 2));
+    const estimatedHeight = 360;
+
+    if (!selectionAnchor || viewportSize.width <= 0 || viewportSize.height <= 0) {
+      return {
+        wrapperClassName: "fixed z-60 hidden md:block",
+        style: {
+          left: "50%",
+          transform: "translateX(-50%)",
+          width,
+          bottom: isReaderUiVisible
+            ? "calc(env(safe-area-inset-bottom) + 6rem)"
+            : "calc(env(safe-area-inset-bottom) + 1rem)",
+        } as const,
+        variant: "desktop" as const,
+      };
+    }
+
+    const preferredTop = selectionAnchor.top - estimatedHeight - PANEL_SELECTION_GAP;
+    const belowTop = selectionAnchor.bottom + PANEL_SELECTION_GAP;
+    const fitsAbove = preferredTop >= visibleTopOffset;
+    const maxTop = Math.max(visibleTopOffset, viewportSize.height - estimatedHeight - PANEL_VIEWPORT_MARGIN);
+    const top = Math.min(Math.max(fitsAbove ? preferredTop : belowTop, visibleTopOffset), maxTop);
+    const left = Math.min(
+      Math.max(selectionAnchor.centerX - width / 2, PANEL_VIEWPORT_MARGIN),
+      viewportSize.width - width - PANEL_VIEWPORT_MARGIN,
+    );
+
+    return {
+      wrapperClassName: "fixed z-60 hidden md:block",
+      style: {
+        left,
+        top,
+        width,
+      } as const,
+      variant: "desktop" as const,
+    };
+  }, [isMobileViewport, isReaderUiVisible, selectionAnchor, viewportSize.height, viewportSize.width]);
+
+  useEffect(() => {
+    if (!selectedText) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const targetNode = event.target;
+
+      if (!(targetNode instanceof Node)) {
+        return;
+      }
+
+      const panelNode = panelContainerRef.current;
+
+      if (panelNode && panelNode.contains(targetNode)) {
+        return;
+      }
+
+      const readerContainer = containerRef.current;
+
+      if (!readerContainer || !readerContainer.contains(targetNode)) {
+        return;
+      }
+
+      clearPanelFromOutsideInteraction();
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+    };
+  }, [clearPanelFromOutsideInteraction, selectedText]);
+
   useEffect(() => {
     let isCancelled = false;
     const abortController = new AbortController();
@@ -1000,6 +1218,10 @@ export function EpubReader({
     let selectionHandler: RenditionEventHandler | null = null;
     let relocatedHandler: RenditionEventHandler | null = null;
     let clickHandler: RenditionEventHandler | null = null;
+    let isDesktopSelectionPointerDown = false;
+    let pendingDesktopSelectionContents: EpubContents | null = null;
+    const selectionReleaseCleanupCallbacks: Array<() => void> = [];
+    const selectionTrackedDocuments = new WeakSet<Document>();
     const container = containerRef.current;
 
     if (!container) {
@@ -1008,11 +1230,125 @@ export function EpubReader({
 
     const renderContainer: HTMLDivElement = container;
 
+    const clearPendingSelectionRelease = () => {
+      pendingDesktopSelectionContents = null;
+      isDesktopSelectionPointerDown = false;
+
+      for (const cleanup of selectionReleaseCleanupCallbacks) {
+        cleanup();
+      }
+
+      selectionReleaseCleanupCallbacks.length = 0;
+    };
+
+    const commitSelectionFromContents = (contents: EpubContents) => {
+      const selection = contents.window.getSelection();
+
+      if (!selection || selection.rangeCount === 0) {
+        return;
+      }
+
+      const extractedContext = extractContextSentenceFromSelection(selection);
+
+      if (!extractedContext.selectedText) {
+        return;
+      }
+
+      clearPendingDesktopClickToggle();
+      selectedContentsRef.current = contents;
+      setSelectionAnchor(getSelectionAnchor(selection, contents));
+      setSelectedText(extractedContext.selectedText);
+      setContextSentence(extractedContext.contextSentence);
+    };
+
+    const flushPendingDesktopSelection = () => {
+      const pendingContents = pendingDesktopSelectionContents;
+
+      if (!pendingContents) {
+        return;
+      }
+
+      pendingDesktopSelectionContents = null;
+      commitSelectionFromContents(pendingContents);
+    };
+
+    const registerSelectionReleaseTracking = (contents: EpubContents) => {
+      const releaseDocument = contents.window.document;
+
+      if (selectionTrackedDocuments.has(releaseDocument)) {
+        return;
+      }
+
+      selectionTrackedDocuments.add(releaseDocument);
+
+      const onPressStart = () => {
+        if (isMobileViewportRef.current || isTouchLikeDeviceRef.current) {
+          return;
+        }
+
+        isDesktopSelectionPointerDown = true;
+      };
+
+      const onRelease = () => {
+        if (!isDesktopSelectionPointerDown) {
+          return;
+        }
+
+        isDesktopSelectionPointerDown = false;
+        flushPendingDesktopSelection();
+      };
+
+      const onPointerDown = (event: PointerEvent) => {
+        if ((event.buttons & 1) !== 1) {
+          return;
+        }
+
+        onPressStart();
+      };
+
+      const syncPanelWithNativeSelection = () => {
+        if (!selectedTextRef.current) {
+          return;
+        }
+
+        const currentSelection = contents.window.getSelection();
+        const hasSelection = Boolean(currentSelection && currentSelection.toString().trim());
+
+        if (hasSelection || isDesktopSelectionPointerDown) {
+          return;
+        }
+
+        pendingDesktopSelectionContents = null;
+        clearPanelFromOutsideInteraction();
+      };
+
+      const onSelectionChange = () => {
+        scheduleMicrotask(syncPanelWithNativeSelection);
+      };
+
+      releaseDocument.addEventListener("mousedown", onPressStart, true);
+      releaseDocument.addEventListener("pointerdown", onPointerDown, true);
+      releaseDocument.addEventListener("mouseup", onRelease, true);
+      releaseDocument.addEventListener("pointerup", onRelease, true);
+      releaseDocument.addEventListener("selectionchange", onSelectionChange);
+      contents.window.addEventListener("blur", onRelease);
+
+      selectionReleaseCleanupCallbacks.push(() => {
+        releaseDocument.removeEventListener("mousedown", onPressStart, true);
+        releaseDocument.removeEventListener("pointerdown", onPointerDown, true);
+        releaseDocument.removeEventListener("mouseup", onRelease, true);
+        releaseDocument.removeEventListener("pointerup", onRelease, true);
+        releaseDocument.removeEventListener("selectionchange", onSelectionChange);
+        contents.window.removeEventListener("blur", onRelease);
+      });
+    };
+
     renderContainer.innerHTML = "";
     isRenditionReadyRef.current = false;
     locationsReadyRef.current = false;
     selectedContentsRef.current = null;
     clearPendingDesktopClickToggle();
+    clearPendingSelectionRelease();
     lastSavedLocationRef.current = initialLocation ?? null;
     lastSavedProgressRef.current = normalizeProgressPercentageValue(initialProgressPercentage);
     hasUserNavigatedRef.current = false;
@@ -1021,6 +1357,7 @@ export function EpubReader({
     setErrorMessage(null);
     setSelectedText("");
     setContextSentence(null);
+    setSelectionAnchor(null);
     setProgressPercentage(null);
     setIsSettingsOpen(false);
     setIsChromeVisible(false);
@@ -1168,6 +1505,11 @@ export function EpubReader({
         applyReaderAppearance(rendition, themeRef.current, fontSizeRef.current);
         applySpreadForViewport(rendition, isMobileViewportRef.current);
 
+        const renditionContentHooks = getRenditionContentHooks(rendition);
+        renditionContentHooks?.register((contents) => {
+          registerSelectionReleaseTracking(contents);
+        });
+
         bookRef.current = book;
         renditionRef.current = rendition;
 
@@ -1180,22 +1522,22 @@ export function EpubReader({
             }
 
             const contents = possibleContents as EpubContents;
-            const selection = contents.window.getSelection();
+            registerSelectionReleaseTracking(contents);
 
-            if (!selection || selection.rangeCount === 0) {
+            const shouldWaitForRelease =
+              !isMobileViewportRef.current && !isTouchLikeDeviceRef.current;
+
+            if (!shouldWaitForRelease) {
+              commitSelectionFromContents(contents);
               return;
             }
 
-            const extractedContext = extractContextSentenceFromSelection(selection);
-
-            if (!extractedContext.selectedText) {
+            if (isDesktopSelectionPointerDown) {
+              pendingDesktopSelectionContents = contents;
               return;
             }
 
-            clearPendingDesktopClickToggle();
-            selectedContentsRef.current = contents;
-            setSelectedText(extractedContext.selectedText);
-            setContextSentence(extractedContext.contextSentence);
+            commitSelectionFromContents(contents);
           } catch {
             // Ignore selection extraction errors and keep reader responsive.
           }
@@ -1344,6 +1686,7 @@ export function EpubReader({
           }
 
           if (selectedTextRef.current) {
+            clearPanelFromOutsideInteraction();
             return;
           }
 
@@ -1631,7 +1974,7 @@ export function EpubReader({
         console.error("EpubReader load error:", error);
 
         if (!isCancelled) {
-          setErrorMessage("Could not load this EPUB file right now. Please try again from Library.");
+          setErrorMessage("The EPUB file could not be opened.");
           setIsLoading(false);
           setIsReady(false);
         }
@@ -1656,6 +1999,7 @@ export function EpubReader({
       }
       resizeObserver?.disconnect();
       clearPendingDesktopClickToggle();
+      clearPendingSelectionRelease();
       if (selectionHandler && renditionRef.current) {
         getRenditionEvents(renditionRef.current).off("selected", selectionHandler);
       }
@@ -1682,6 +2026,8 @@ export function EpubReader({
     initialLocation,
     initialProgressPercentage,
     scheduleRestoreGuardRelease,
+    clearPanelFromOutsideInteraction,
+    setSelectionAnchor,
     toggleReaderUi,
   ]);
 
@@ -1763,10 +2109,26 @@ export function EpubReader({
         )}
 
         {errorMessage && (
-          <div className="absolute left-3 right-3 top-3 z-50">
-            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {errorMessage}
-            </p>
+          <div className="absolute left-3 right-3 top-3 z-50 flex justify-center">
+            <div className="w-full max-w-md rounded-xl border border-red-200 bg-red-50/95 p-3 shadow-sm backdrop-blur">
+              <p className="text-sm text-red-700">{errorMessage}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={navigateBackToLibrary}
+                  className="inline-flex h-9 items-center rounded-md border border-red-200 bg-white px-3 text-sm font-medium text-red-700 hover:bg-red-100"
+                >
+                  Back to Library
+                </button>
+                <button
+                  type="button"
+                  onClick={retryReaderLoad}
+                  className="inline-flex h-9 items-center rounded-md border border-red-200 bg-red-100 px-3 text-sm font-medium text-red-700 hover:bg-red-200"
+                >
+                  Try again
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -1783,38 +2145,16 @@ export function EpubReader({
         />
 
         {selectedText && (
-          <>
-            <div className="absolute bottom-4 right-4 z-60 hidden w-full max-w-md md:block">
-              <SelectionPanel
-                bookId={bookId}
-                selectedText={selectedText}
-                contextSentence={contextSentence}
-                sourceLanguage={sourceLanguage}
-                targetLanguage={targetLanguage}
-                onClear={clearSelection}
-                variant="desktop"
-              />
-            </div>
-
-            <div
-              className={cn(
-                "absolute inset-x-3 z-70 md:hidden",
-                isReaderUiVisible
-                  ? "bottom-[calc(env(safe-area-inset-bottom)+5.75rem)]"
-                  : "bottom-[calc(env(safe-area-inset-bottom)+0.75rem)]",
-              )}
-            >
-              <SelectionPanel
-                bookId={bookId}
-                selectedText={selectedText}
-                contextSentence={contextSentence}
-                sourceLanguage={sourceLanguage}
-                targetLanguage={targetLanguage}
-                onClear={clearSelection}
-                variant="mobile"
-              />
-            </div>
-          </>
+          <div ref={panelContainerRef} className={panelLayout.wrapperClassName} style={panelLayout.style}>
+            <SelectionPanel
+              bookId={bookId}
+              selectedText={selectedText}
+              contextSentence={contextSentence}
+              sourceLanguage={sourceLanguage}
+              targetLanguage={targetLanguage}
+              variant={panelLayout.variant}
+            />
+          </div>
         )}
       </div>
     </section>
