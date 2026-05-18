@@ -43,7 +43,8 @@ export default async function LibraryPage({
   const isUploadOpen = uploadParam === "open";
   const shouldStartUploadClosed = onboardingUploadParam === "closed";
   const [books, credits] = await Promise.all([getUserBooksWithProgress(), getUserCredits()]);
-  const creditsBalance = credits ?? 0;
+  const creditsBalance = Math.max(0, credits ?? 0);
+  const hasUploadCredits = creditsBalance > 0;
   const hasBooks = books.length > 0;
   const inProgressCount = books.filter((book) => {
     const progress = normalizeProgressPercentage(book.progress_percentage);
@@ -70,7 +71,7 @@ export default async function LibraryPage({
         completedCount={completedCount}
       />
 
-      {creditsBalance === 0 && (
+      {!hasUploadCredits && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900 sm:px-6">
           <p className="font-medium">You have no credits available.</p>
           <p className="mt-1">Buy credits to upload your next book.</p>
@@ -83,17 +84,19 @@ export default async function LibraryPage({
         </div>
       )}
 
-      <div id="upload-book-panel">
-        <UploadBookButton
-          initiallyOpen={!shouldStartUploadClosed && (!hasBooks || isUploadOpen)}
-          creditsBalance={creditsBalance}
-        >
-          <UploadBookForm creditsBalance={creditsBalance} />
-        </UploadBookButton>
-      </div>
+      {hasUploadCredits && (
+        <div id="upload-book-panel">
+          <UploadBookButton
+            initiallyOpen={!shouldStartUploadClosed && (!hasBooks || isUploadOpen)}
+            creditsBalance={creditsBalance}
+          >
+            <UploadBookForm creditsBalance={creditsBalance} />
+          </UploadBookButton>
+        </div>
+      )}
 
       {!hasBooks ? (
-        <EmptyLibraryState uploadHref="#upload-book-panel" />
+        hasUploadCredits ? <EmptyLibraryState uploadHref="#upload-book-panel" /> : null
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {books.map((book) => (

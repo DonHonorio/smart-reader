@@ -46,7 +46,7 @@ export function AppHeader({ creditsBalance = null }: AppHeaderProps) {
             </>
           ) : (
             <>
-              <Link href={ROUTES.home} className="text-lg font-semibold tracking-tight text-slate-900">
+              <Link href={ROUTES.dashboard} className="text-lg font-semibold tracking-tight text-slate-900">
                 {APP_TITLE}
               </Link>
               <div className="flex items-center gap-2">

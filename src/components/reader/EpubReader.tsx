@@ -141,6 +141,15 @@ type RenditionContentsApi = {
   getContents?: () => unknown;
 };
 
+type RenditionManagerApi = {
+  container?: HTMLElement | null;
+  scrollTo?: (x: number, y: number, silent?: boolean) => unknown;
+};
+
+type RenditionManagerRefApi = {
+  manager?: RenditionManagerApi;
+};
+
 type SelectionAnchor = {
   centerX: number;
   top: number;
@@ -709,6 +718,20 @@ function getRenditionContents(rendition: Rendition | null) {
   }
 }
 
+function getRenditionManager(rendition: Rendition | null) {
+  if (!rendition) {
+    return null;
+  }
+
+  const manager = (rendition as unknown as RenditionManagerRefApi).manager;
+
+  if (!manager || typeof manager !== "object") {
+    return null;
+  }
+
+  return manager;
+}
+
 function buildSelectionCss(theme: ReaderTheme) {
   const palette = READER_THEME_PALETTE[theme];
   const selectionTextColor = theme === "dark" ? DARK_THEME_SELECTION_TEXT : palette.epubText;
@@ -870,6 +893,14 @@ function getTouchByIdentifier(touches: TouchList, identifier: number | null) {
   return null;
 }
 
+function hasSelectedText(selection: Selection | null | undefined) {
+  if (!selection) {
+    return false;
+  }
+
+  return Boolean(selection.toString().trim());
+}
+
 export function EpubReader({
   fileUrl,
   bookId,
@@ -909,6 +940,9 @@ export function EpubReader({
   const themeRef = useRef<ReaderTheme>(DEFAULT_READER_THEME);
   const fontSizeRef = useRef(DEFAULT_READER_FONT_SIZE);
   const isMobileViewportRef = useRef(true);
+  const selectionLockedScrollLeftRef = useRef<number | null>(null);
+  const selectionLockedScrollTopRef = useRef<number | null>(null);
+  const isSyncingSelectionScrollRef = useRef(false);
 
   const [isLoading, setIsLoading] = useState(true);
   const [isReady, setIsReady] = useState(false);
@@ -1001,6 +1035,84 @@ export function EpubReader({
     }, READER_SETTINGS_SETTLE_MS);
   }, [clearReaderSettingsGuardTimer]);
 
+  const hasActiveTextSelection = useCallback(() => {
+    if (selectedTextRef.current.trim().length > 0) {
+      return true;
+    }
+
+    const browserSelection = typeof window === "undefined" ? null : window.getSelection();
+
+    if (hasSelectedText(browserSelection)) {
+      return true;
+    }
+
+    if (hasSelectedText(selectedContentsRef.current?.window.getSelection())) {
+      return true;
+    }
+
+    const renditionContents = getRenditionContents(renditionRef.current);
+
+    for (const contents of renditionContents) {
+      if (hasSelectedText(contents.window.getSelection())) {
+        return true;
+      }
+    }
+
+    return false;
+  }, []);
+
+  const releaseSelectionScrollLock = useCallback(() => {
+    selectionLockedScrollLeftRef.current = null;
+    selectionLockedScrollTopRef.current = null;
+    isSyncingSelectionScrollRef.current = false;
+  }, []);
+
+  const syncSelectionScrollLock = useCallback(() => {
+    const renditionManager = getRenditionManager(renditionRef.current);
+    const scrollContainer = renditionManager?.container ?? null;
+
+    if (!scrollContainer) {
+      releaseSelectionScrollLock();
+      return;
+    }
+
+    if (!hasActiveTextSelection()) {
+      releaseSelectionScrollLock();
+      return;
+    }
+
+    if (
+      selectionLockedScrollLeftRef.current === null ||
+      selectionLockedScrollTopRef.current === null
+    ) {
+      selectionLockedScrollLeftRef.current = scrollContainer.scrollLeft;
+      selectionLockedScrollTopRef.current = scrollContainer.scrollTop;
+      return;
+    }
+
+    const targetLeft = selectionLockedScrollLeftRef.current;
+    const targetTop = selectionLockedScrollTopRef.current;
+    const hasHorizontalDrift = Math.abs(scrollContainer.scrollLeft - targetLeft) >= 1;
+    const hasVerticalDrift = Math.abs(scrollContainer.scrollTop - targetTop) >= 1;
+
+    if (!hasHorizontalDrift && !hasVerticalDrift) {
+      return;
+    }
+
+    isSyncingSelectionScrollRef.current = true;
+
+    try {
+      if (typeof renditionManager?.scrollTo === "function") {
+        renditionManager.scrollTo(targetLeft, targetTop, true);
+      } else {
+        scrollContainer.scrollLeft = targetLeft;
+        scrollContainer.scrollTop = targetTop;
+      }
+    } finally {
+      isSyncingSelectionScrollRef.current = false;
+    }
+  }, [hasActiveTextSelection, releaseSelectionScrollLock]);
+
   useEffect(() => {
     selectedTextRef.current = selectedText;
   }, [selectedText]);
@@ -1020,6 +1132,15 @@ export function EpubReader({
   useEffect(() => {
     isMobileViewportRef.current = isMobileViewport;
   }, [isMobileViewport]);
+
+  useEffect(() => {
+    if (selectedText) {
+      syncSelectionScrollLock();
+      return;
+    }
+
+    releaseSelectionScrollLock();
+  }, [releaseSelectionScrollLock, selectedText, syncSelectionScrollLock]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -1128,7 +1249,8 @@ export function EpubReader({
     setSelectedText("");
     setContextSentence(null);
     setSelectionAnchor(null);
-  }, []);
+    releaseSelectionScrollLock();
+  }, [releaseSelectionScrollLock]);
 
   const clearPendingDesktopClickToggle = useCallback(() => {
     if (pendingDesktopClickTimerRef.current) {
@@ -1419,6 +1541,7 @@ export function EpubReader({
 
       const onSelectionChange = () => {
         scheduleMicrotask(syncPanelWithNativeSelection);
+        scheduleMicrotask(syncSelectionScrollLock);
       };
 
       releaseDocument.addEventListener("mousedown", onPressStart, true);
@@ -1459,6 +1582,7 @@ export function EpubReader({
     latestRestoreLocationRef.current = initialLocation ?? null;
     latestProgressPercentageRef.current = null;
     latestChapterHrefRef.current = null;
+    releaseSelectionScrollLock();
     clearStableReadingDebounce();
     clearPendingNavigationReason();
     clearRestoreGuardTimer();
@@ -1605,42 +1729,84 @@ export function EpubReader({
           applySelectionStylesToContents(contents, themeRef.current);
           registerSelectionReleaseTracking(contents);
 
-          // Simple touch-based swipe for page navigation on mobile
+          // Keep swipe navigation disabled while text selection is active.
           let touchStartX: number | null = null;
           let touchStartY: number | null = null;
+          let touchIdentifier: number | null = null;
 
-          const onTouchStart = (event: TouchEvent) => {
-            if (event.touches.length !== 1) {
-              touchStartX = null;
-              touchStartY = null;
+          const resetSwipeGestureState = () => {
+            touchStartX = null;
+            touchStartY = null;
+            touchIdentifier = null;
+          };
+
+          const shouldBlockSwipeForSelection = () => {
+            const hasSelection = hasActiveTextSelection();
+
+            if (hasSelection) {
+              resetSwipeGestureState();
+              syncSelectionScrollLock();
+            }
+
+            return hasSelection;
+          };
+
+          const blockSwipeWhenSelectionActive = (event: TouchEvent) => {
+            if (!hasActiveTextSelection()) {
               return;
             }
 
-            touchStartX = event.touches[0].clientX;
-            touchStartY = event.touches[0].clientY;
+            resetSwipeGestureState();
+            syncSelectionScrollLock();
+            event.stopImmediatePropagation();
+          };
+
+          const onTouchStart = (event: TouchEvent) => {
+            if (event.touches.length !== 1 || shouldBlockSwipeForSelection()) {
+              resetSwipeGestureState();
+              return;
+            }
+
+            const touch = event.touches[0];
+
+            touchStartX = touch.clientX;
+            touchStartY = touch.clientY;
+            touchIdentifier = touch.identifier;
           };
 
           const onTouchEnd = (event: TouchEvent) => {
-            if (touchStartX === null || touchStartY === null || event.changedTouches.length === 0) {
+            if (
+              touchStartX === null ||
+              touchStartY === null ||
+              event.changedTouches.length === 0 ||
+              shouldBlockSwipeForSelection()
+            ) {
+              resetSwipeGestureState();
               return;
             }
 
-            const endX = event.changedTouches[0].clientX;
-            const endY = event.changedTouches[0].clientY;
+            const endedTouch =
+              getTouchByIdentifier(event.changedTouches, touchIdentifier) ?? event.changedTouches[0];
+
+            if (!endedTouch) {
+              resetSwipeGestureState();
+              return;
+            }
+
+            const endX = endedTouch.clientX;
+            const endY = endedTouch.clientY;
             const deltaX = endX - touchStartX;
             const deltaY = endY - touchStartY;
 
             // Ignore if primarily vertical swipe
             if (Math.abs(deltaY) > Math.abs(deltaX)) {
+              resetSwipeGestureState();
               return;
             }
 
             // Require minimum horizontal movement (40px)
             if (Math.abs(deltaX) < MOBILE_SWIPE_THRESHOLD_PX) {
-              return;
-            }
-
-            if (selectedTextRef.current) {
+              resetSwipeGestureState();
               return;
             }
 
@@ -1652,22 +1818,74 @@ export function EpubReader({
               void rendition.next();
             }
 
-            touchStartX = null;
-            touchStartY = null;
+            resetSwipeGestureState();
           };
+
+          const onTouchCancel = () => {
+            resetSwipeGestureState();
+          };
+
+          contents.document.addEventListener("touchstart", blockSwipeWhenSelectionActive, {
+            capture: true,
+            passive: false,
+          });
+          contents.document.addEventListener("touchmove", blockSwipeWhenSelectionActive, {
+            capture: true,
+            passive: false,
+          });
+          contents.document.addEventListener("touchend", blockSwipeWhenSelectionActive, {
+            capture: true,
+            passive: false,
+          });
+          contents.document.addEventListener("touchcancel", blockSwipeWhenSelectionActive, {
+            capture: true,
+            passive: false,
+          });
 
           contents.document.addEventListener("touchstart", onTouchStart, { passive: true });
           contents.document.addEventListener("touchend", onTouchEnd, { passive: true });
+          contents.document.addEventListener("touchcancel", onTouchCancel, { passive: true });
 
           // Cleanup on unmount
           selectionReleaseCleanupCallbacks.push(() => {
+            contents.document.removeEventListener("touchstart", blockSwipeWhenSelectionActive, true);
+            contents.document.removeEventListener("touchmove", blockSwipeWhenSelectionActive, true);
+            contents.document.removeEventListener("touchend", blockSwipeWhenSelectionActive, true);
+            contents.document.removeEventListener("touchcancel", blockSwipeWhenSelectionActive, true);
             contents.document.removeEventListener("touchstart", onTouchStart);
             contents.document.removeEventListener("touchend", onTouchEnd);
+            contents.document.removeEventListener("touchcancel", onTouchCancel);
           });
         });
 
         bookRef.current = book;
         renditionRef.current = rendition;
+
+        const renditionManager = getRenditionManager(rendition);
+        const renditionScrollContainer = renditionManager?.container ?? null;
+
+        if (renditionScrollContainer) {
+          const handleRenditionScrollWhileSelectionIsActive = () => {
+            if (isSyncingSelectionScrollRef.current) {
+              return;
+            }
+
+            syncSelectionScrollLock();
+          };
+
+          renditionScrollContainer.addEventListener(
+            "scroll",
+            handleRenditionScrollWhileSelectionIsActive,
+            { passive: true },
+          );
+
+          selectionReleaseCleanupCallbacks.push(() => {
+            renditionScrollContainer.removeEventListener(
+              "scroll",
+              handleRenditionScrollWhileSelectionIsActive,
+            );
+          });
+        }
 
         selectionHandler = (...args: unknown[]) => {
           try {
@@ -2147,6 +2365,7 @@ export function EpubReader({
       clearReaderSettingsGuardTimer();
       isRestoringInitialLocationRef.current = false;
       isApplyingReaderSettingsRef.current = false;
+      releaseSelectionScrollLock();
       abortController.abort();
       isRenditionReadyRef.current = false;
       locationsReadyRef.current = false;
@@ -2181,7 +2400,10 @@ export function EpubReader({
     fileUrl,
     initialLocation,
     initialProgressPercentage,
+    hasActiveTextSelection,
+    releaseSelectionScrollLock,
     scheduleRestoreGuardRelease,
+    syncSelectionScrollLock,
     clearPanelFromOutsideInteraction,
     setSelectionAnchor,
     toggleReaderUi,

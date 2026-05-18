@@ -9,7 +9,7 @@ export function AppSidebar() {
       id="app-sidebar-desktop"
       className="hidden w-60 shrink-0 border-r border-slate-200 bg-white md:block md:px-5 md:py-8"
     >
-      <Link href={ROUTES.home} className="text-lg font-semibold tracking-tight text-slate-900">
+      <Link href={ROUTES.dashboard} className="text-lg font-semibold tracking-tight text-slate-900">
         {APP_TITLE}
       </Link>
       <nav className="mt-8 flex flex-col gap-2">
