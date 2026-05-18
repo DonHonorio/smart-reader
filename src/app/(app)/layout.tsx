@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
 import { AppShell } from "@/components/layout/AppShell";
 import { getUserCredits } from "@/lib/credits";
+import { getUserOnboarding } from "@/lib/onboarding";
 import { createClient } from "@/lib/supabase/server";
 
 type PrivateAppLayoutProps = {
@@ -18,7 +19,14 @@ export default async function PrivateAppLayout({ children }: PrivateAppLayoutPro
     redirect("/login");
   }
 
-  const creditsBalance = await getUserCredits();
+  const [creditsBalance, onboarding] = await Promise.all([
+    getUserCredits(),
+    getUserOnboarding(),
+  ]);
 
-  return <AppShell creditsBalance={creditsBalance}>{children}</AppShell>;
+  return (
+    <AppShell creditsBalance={creditsBalance} initialOnboarding={onboarding}>
+      {children}
+    </AppShell>
+  );
 }

@@ -9,6 +9,7 @@ export const ROUTES = {
   register: "/register",
   dashboard: "/dashboard",
   library: "/library",
+  onboardingReader: "/onboarding/reader",
   vocabulary: "/vocabulary",
   export: "/export",
   billing: "/billing",

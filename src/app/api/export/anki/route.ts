@@ -121,3 +121,8 @@ export async function GET() {
     return NextResponse.json({ error: "Could not export vocabulary right now." }, { status: 500 });
   }
 }
+
+// Backward compatibility: some clients still call POST for export.
+export async function POST() {
+  return GET();
+}

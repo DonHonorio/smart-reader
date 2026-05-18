@@ -24,3 +24,29 @@ body {
   color: var(--foreground);
   font-family: var(--font-geist-sans), sans-serif;
 }
+
+body.onboarding-lock-vocabulary-filters #vocabulary-filters-panel {
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+body.onboarding-lock-vocabulary-filters #app-sidebar-desktop,
+body.onboarding-lock-vocabulary-filters #app-sidebar-mobile-nav {
+  opacity: 0.6;
+}
+
+body.onboarding-lock-vocabulary-filters #app-sidebar-desktop a,
+body.onboarding-lock-vocabulary-filters #app-sidebar-mobile-nav a {
+  pointer-events: none;
+}
+
+body.onboarding-lock-vocabulary-filters form[action="/logout"] button {
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+@media (min-width: 768px) {
+  body.onboarding-lock-upload-panel-step-2 #upload-book-panel {
+    pointer-events: none;
+  }
+}

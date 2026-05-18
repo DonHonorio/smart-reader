@@ -25,7 +25,23 @@ function normalizeProgressPercentage(value: number | null | undefined) {
   return value;
 }
 
-export default async function LibraryPage() {
+export default async function LibraryPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{
+    upload?: string | string[] | undefined;
+    onboardingUpload?: string | string[] | undefined;
+  }>;
+}) {
+  const resolvedSearchParams = (await searchParams) ?? {};
+  const uploadParam = Array.isArray(resolvedSearchParams.upload)
+    ? resolvedSearchParams.upload[0]
+    : resolvedSearchParams.upload;
+  const onboardingUploadParam = Array.isArray(resolvedSearchParams.onboardingUpload)
+    ? resolvedSearchParams.onboardingUpload[0]
+    : resolvedSearchParams.onboardingUpload;
+  const isUploadOpen = uploadParam === "open";
+  const shouldStartUploadClosed = onboardingUploadParam === "closed";
   const [books, credits] = await Promise.all([getUserBooksWithProgress(), getUserCredits()]);
   const creditsBalance = credits ?? 0;
   const hasBooks = books.length > 0;
@@ -68,7 +84,10 @@ export default async function LibraryPage() {
       )}
 
       <div id="upload-book-panel">
-        <UploadBookButton initiallyOpen={!hasBooks} creditsBalance={creditsBalance}>
+        <UploadBookButton
+          initiallyOpen={!shouldStartUploadClosed && (!hasBooks || isUploadOpen)}
+          creditsBalance={creditsBalance}
+        >
           <UploadBookForm creditsBalance={creditsBalance} />
         </UploadBookButton>
       </div>

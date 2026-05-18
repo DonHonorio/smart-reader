@@ -4,6 +4,8 @@ import { cn } from "@/lib/utils";
 type ReaderControlsProps = {
   isVisible: boolean;
   isReady: boolean;
+  canPrev?: boolean;
+  canNext?: boolean;
   progressPercentage: number | null;
   onPrev: () => void;
   onNext: () => void;
@@ -12,6 +14,8 @@ type ReaderControlsProps = {
 export function ReaderControls({
   isVisible,
   isReady,
+  canPrev = true,
+  canNext = true,
   progressPercentage,
   onPrev,
   onNext,
@@ -28,8 +32,8 @@ export function ReaderControls({
           <button
             type="button"
             onClick={onPrev}
-            disabled={!isReady}
-            className="inline-flex h-10 min-w-20 select-none items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-55"
+            disabled={!isReady || !canPrev}
+            className="inline-flex h-10 min-w-20 select-none items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-55"
           >
             Prev
           </button>
@@ -39,8 +43,8 @@ export function ReaderControls({
           <button
             type="button"
             onClick={onNext}
-            disabled={!isReady}
-            className="inline-flex h-10 min-w-20 select-none items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-55"
+            disabled={!isReady || !canNext}
+            className="inline-flex h-10 min-w-20 select-none items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-55"
           >
             Next
           </button>
@@ -51,9 +55,9 @@ export function ReaderControls({
         <button
           type="button"
           onClick={onPrev}
-          disabled={!isReady}
+          disabled={!isReady || !canPrev}
           className={cn(
-            "absolute left-5 top-1/2 inline-flex h-11 w-11 -translate-y-1/2 select-none items-center justify-center rounded-full border border-slate-200 bg-white/90 text-lg font-semibold text-slate-700 shadow-sm backdrop-blur transition-all md:cursor-pointer",
+            "absolute left-5 top-1/2 inline-flex h-11 w-11 -translate-y-1/2 select-none items-center justify-center rounded-full border border-slate-200 bg-white/90 text-lg font-semibold text-slate-700 shadow-sm backdrop-blur transition-all cursor-pointer",
             isVisible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
             "hover:bg-white disabled:cursor-not-allowed disabled:opacity-40",
           )}
@@ -65,9 +69,9 @@ export function ReaderControls({
         <button
           type="button"
           onClick={onNext}
-          disabled={!isReady}
+          disabled={!isReady || !canNext}
           className={cn(
-            "absolute right-5 top-1/2 inline-flex h-11 w-11 -translate-y-1/2 select-none items-center justify-center rounded-full border border-slate-200 bg-white/90 text-lg font-semibold text-slate-700 shadow-sm backdrop-blur transition-all md:cursor-pointer",
+            "absolute right-5 top-1/2 inline-flex h-11 w-11 -translate-y-1/2 select-none items-center justify-center rounded-full border border-slate-200 bg-white/90 text-lg font-semibold text-slate-700 shadow-sm backdrop-blur transition-all cursor-pointer",
             isVisible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
             "hover:bg-white disabled:cursor-not-allowed disabled:opacity-40",
           )}

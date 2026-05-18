@@ -5,7 +5,10 @@ import { PRIVATE_NAVIGATION } from "@/lib/navigation";
 
 export function AppSidebar() {
   return (
-    <aside className="hidden w-60 shrink-0 border-r border-slate-200 bg-white md:block md:px-5 md:py-8">
+    <aside
+      id="app-sidebar-desktop"
+      className="hidden w-60 shrink-0 border-r border-slate-200 bg-white md:block md:px-5 md:py-8"
+    >
       <Link href={ROUTES.home} className="text-lg font-semibold tracking-tight text-slate-900">
         {APP_TITLE}
       </Link>
@@ -23,7 +26,9 @@ export function AppSidebar() {
 
       <div className="mt-8 border-t border-slate-200 pt-6">
         <Link
+          id="sidebar-upload-book-button"
           href={ROUTES.library}
+          onClick={() => window.dispatchEvent(new Event("onboarding-upload-book-clicked"))}
           className={buttonClassNames({ variant: "secondary", size: "sm", className: "w-full" })}
         >
           Upload book

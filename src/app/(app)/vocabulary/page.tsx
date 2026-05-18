@@ -89,7 +89,7 @@ export default async function VocabularyPage({ searchParams }: VocabularyPagePro
 
   return (
     <section className="mx-auto w-full max-w-6xl space-y-6">
-      <div className="sticky top-0 z-20">
+      <div className="md:sticky md:top-0 md:z-20">
         <VocabularyFilters
           initialSearch={search}
           initialUnitType={unitType || "all"}

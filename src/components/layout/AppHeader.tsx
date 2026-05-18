@@ -101,7 +101,10 @@ export function AppHeader({ creditsBalance = null }: AppHeaderProps) {
         </div>
       </header>
 
-      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white md:hidden">
+      <nav
+        id="app-sidebar-mobile-nav"
+        className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white md:hidden"
+      >
         <ul className="mx-auto grid w-full max-w-screen-sm grid-cols-5 gap-1 px-2 py-2">
           {PRIVATE_NAVIGATION.map((item) => {
             const isActive = isPrivateNavigationItemActive(pathname, item.href);

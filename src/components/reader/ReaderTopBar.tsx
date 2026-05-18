@@ -6,6 +6,8 @@ type ReaderTopBarProps = {
   author: string;
   isVisible: boolean;
   progressPercentage: number | null;
+  canBack?: boolean;
+  canOpenSettings?: boolean;
   onBack: () => void;
   onOpenSettings: () => void;
 };
@@ -15,6 +17,8 @@ export function ReaderTopBar({
   author,
   isVisible,
   progressPercentage,
+  canBack = true,
+  canOpenSettings = true,
   onBack,
   onOpenSettings,
 }: ReaderTopBarProps) {
@@ -35,7 +39,8 @@ export function ReaderTopBar({
         <button
           type="button"
           onClick={onBack}
-          className="inline-flex h-9 select-none items-center rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 md:cursor-pointer"
+          disabled={!canBack}
+          className="inline-flex h-9 select-none items-center rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 md:cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
         >
           Library
         </button>
@@ -50,7 +55,8 @@ export function ReaderTopBar({
         <button
           type="button"
           onClick={onOpenSettings}
-          className="inline-flex h-9 select-none items-center rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100 md:cursor-pointer"
+          disabled={!canOpenSettings}
+          className="inline-flex h-9 select-none items-center rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
           aria-label="Open reader settings"
         >
           Aa

@@ -22,6 +22,11 @@ export function UploadBookButton({
   const normalizedCredits = Math.max(0, creditsBalance);
   const hasCredits = normalizedCredits > 0;
 
+  function handleToggleUpload() {
+    setIsOpen((current) => !current);
+    window.dispatchEvent(new Event("onboarding-upload-book-clicked"));
+  }
+
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -33,7 +38,7 @@ export function UploadBookButton({
           <p className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-700">
             Credits: {normalizedCredits}
           </p>
-          <Button variant="secondary" onClick={() => setIsOpen((current) => !current)}>
+          <Button id="library-upload-book-toggle" variant="secondary" onClick={handleToggleUpload}>
             {isOpen ? "Hide form" : "Upload book"}
           </Button>
         </div>

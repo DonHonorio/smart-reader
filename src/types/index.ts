@@ -234,3 +234,15 @@ export type SaveVocabularyResponse = {
   status: SaveVocabularyStatus;
   message: string;
 };
+
+export type OnboardingStatus = "pending" | "completed" | "skipped";
+
+export type UserOnboarding = {
+  user_id: string;
+  status: OnboardingStatus;
+  current_step: number;
+  completed_at: string | null;
+  skipped_at: string | null;
+  created_at: string;
+  updated_at: string;
+};

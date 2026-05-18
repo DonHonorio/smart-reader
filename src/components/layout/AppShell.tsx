@@ -3,17 +3,25 @@
 import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { AppHeader } from "@/components/layout/AppHeader";
+import { OnboardingOverlay } from "@/components/onboarding/OnboardingOverlay";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { cn } from "@/lib/utils";
+import type { UserOnboarding } from "@/types";
 
 type AppShellProps = {
   children: ReactNode;
   creditsBalance?: number | null;
+  initialOnboarding?: UserOnboarding | null;
 };
 
-export function AppShell({ children, creditsBalance = null }: AppShellProps) {
+export function AppShell({
+  children,
+  creditsBalance = null,
+  initialOnboarding = null,
+}: AppShellProps) {
   const pathname = usePathname() ?? "";
-  const isReaderRoute = pathname.startsWith("/reader/");
+  const isReaderRoute =
+    pathname.startsWith("/reader/") || pathname.startsWith("/onboarding/reader");
 
   return (
     <div className="h-dvh overflow-hidden bg-slate-50 text-slate-900">
@@ -33,6 +41,7 @@ export function AppShell({ children, creditsBalance = null }: AppShellProps) {
           </main>
         </div>
       </div>
+      <OnboardingOverlay initialOnboarding={initialOnboarding} />
     </div>
   );
 }

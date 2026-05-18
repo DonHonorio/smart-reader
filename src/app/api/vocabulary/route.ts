@@ -151,6 +151,42 @@ function validateRequiredString(
   return { ok: true, value: normalized };
 }
 
+export async function GET(request: Request) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return jsonError("Authentication required.", 401);
+    }
+
+    const { searchParams } = new URL(request.url);
+    const limitParam = Number.parseInt(searchParams.get("limit") ?? "50", 10);
+    const limit = Number.isFinite(limitParam) ? Math.min(200, Math.max(1, limitParam)) : 50;
+    const sort = searchParams.get("sort") === "oldest" ? "oldest" : "newest";
+
+    const { data, error } = await supabase
+      .from("vocabulary_items")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: sort === "oldest" })
+      .limit(limit);
+
+    if (error) {
+      const mappedError = mapSupabaseError(error, "Could not load vocabulary.");
+      return jsonError(mappedError.message, mappedError.status);
+    }
+
+    return NextResponse.json({ items: (data ?? []) as VocabularyItem[] });
+  } catch (error) {
+    console.error("/api/vocabulary GET unexpected error:", error);
+    return jsonError("Could not load vocabulary.", 500);
+  }
+}
+
 export async function POST(request: Request) {
   let body: unknown;
 
@@ -237,28 +273,74 @@ export async function POST(request: Request) {
       return jsonError("Authentication required.", 401);
     }
 
-    const { data: book, error: bookError } = await supabase
-      .from("books")
-      .select("id")
-      .eq("id", validatedBookId.value)
-      .eq("user_id", user.id)
-      .maybeSingle();
+    let effectiveBookId = validatedBookId.value;
 
-    if (bookError) {
-      console.error("/api/vocabulary book query error:", bookError.message);
-      const mappedError = mapSupabaseError(bookError, "Could not verify book access.");
-      return jsonError(mappedError.message, mappedError.status);
-    }
+    if (validatedBookId.value === "onboarding-demo") {
+      const { data: onboardingBook, error: onboardingBookError } = await supabase
+        .from("books")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("title", "Onboarding Demo")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    if (!book) {
-      return jsonError("Book not found.", 404);
+      if (onboardingBookError) {
+        console.error("/api/vocabulary onboarding book query error:", onboardingBookError.message);
+        const mappedError = mapSupabaseError(onboardingBookError, "Could not verify onboarding book.");
+        return jsonError(mappedError.message, mappedError.status);
+      }
+
+      if (onboardingBook?.id) {
+        effectiveBookId = onboardingBook.id;
+      } else {
+        const { data: createdBook, error: createBookError } = await supabase
+          .from("books")
+          .insert({
+            user_id: user.id,
+            title: "Onboarding Demo",
+            author: "Smart-Reader",
+            language_from: "en",
+            language_to: "es",
+            file_path: null,
+            cover_path: null,
+            status: "ready",
+          })
+          .select("id")
+          .single();
+
+        if (createBookError || !createdBook?.id) {
+          console.error("/api/vocabulary onboarding book create error:", createBookError?.message);
+          const mappedError = mapSupabaseError(createBookError, "Could not create onboarding book.");
+          return jsonError(mappedError.message, mappedError.status);
+        }
+
+        effectiveBookId = createdBook.id;
+      }
+    } else {
+      const { data: book, error: bookError } = await supabase
+        .from("books")
+        .select("id")
+        .eq("id", validatedBookId.value)
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (bookError) {
+        console.error("/api/vocabulary book query error:", bookError.message);
+        const mappedError = mapSupabaseError(bookError, "Could not verify book access.");
+        return jsonError(mappedError.message, mappedError.status);
+      }
+
+      if (!book) {
+        return jsonError("Book not found.", 404);
+      }
     }
 
     const { data: existingItem, error: existingItemError } = await supabase
       .from("vocabulary_items")
       .select("*")
       .eq("user_id", user.id)
-      .eq("book_id", validatedBookId.value)
+      .eq("book_id", effectiveBookId)
       .eq("term", validatedTerm.value)
       .eq("context_sentence", validatedContextSentence.value)
       .order("created_at", { ascending: false })
@@ -288,7 +370,7 @@ export async function POST(request: Request) {
 
     const insertPayload: InsertVocabularyPayload = {
       user_id: user.id,
-      book_id: validatedBookId.value,
+      book_id: effectiveBookId,
       selected_text: validatedSelectedText.value,
       term: validatedTerm.value,
       canonical_unit: validatedCanonicalUnit.value,
@@ -332,7 +414,7 @@ export async function POST(request: Request) {
       .from("vocabulary_items")
       .select("*")
       .eq("user_id", user.id)
-      .eq("book_id", validatedBookId.value)
+      .eq("book_id", effectiveBookId)
       .eq("term", validatedTerm.value)
       .eq("translation", validatedTranslation.value)
       .order("created_at", { ascending: false })

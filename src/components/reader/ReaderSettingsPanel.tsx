@@ -7,6 +7,9 @@ type ReaderSettingsPanelProps = {
   fontSize: number;
   minFontSize: number;
   maxFontSize: number;
+  canClose?: boolean;
+  canThemeChange?: boolean;
+  canFontSizeChange?: boolean;
   onClose: () => void;
   onThemeChange: (theme: ReaderTheme) => void;
   onDecreaseFontSize: () => void;
@@ -25,6 +28,9 @@ export function ReaderSettingsPanel({
   fontSize,
   minFontSize,
   maxFontSize,
+  canClose = true,
+  canThemeChange = true,
+  canFontSizeChange = true,
   onClose,
   onThemeChange,
   onDecreaseFontSize,
@@ -37,7 +43,11 @@ export function ReaderSettingsPanel({
           "absolute inset-0 z-50 bg-slate-950/35 transition-opacity duration-200 md:hidden",
           isOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
         )}
-        onClick={onClose}
+        onClick={() => {
+          if (canClose) {
+            onClose();
+          }
+        }}
         aria-hidden={!isOpen}
       />
 
@@ -53,7 +63,8 @@ export function ReaderSettingsPanel({
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-9 items-center rounded-lg border border-slate-200 px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100"
+            disabled={!canClose}
+            className="inline-flex h-9 items-center rounded-lg border border-slate-200 px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
           >
             Close
           </button>
@@ -71,8 +82,9 @@ export function ReaderSettingsPanel({
                     key={option.value}
                     type="button"
                     onClick={() => onThemeChange(option.value)}
+                    disabled={!canThemeChange}
                     className={cn(
-                      "rounded-lg border px-2 py-2 text-sm font-medium transition-colors",
+                      "rounded-lg border px-2 py-2 text-sm font-medium transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-45",
                       isActive
                         ? "border-slate-900 bg-slate-900 text-white"
                         : "border-slate-200 bg-white text-slate-700 hover:bg-slate-100",
@@ -91,8 +103,8 @@ export function ReaderSettingsPanel({
               <button
                 type="button"
                 onClick={onDecreaseFontSize}
-                disabled={fontSize <= minFontSize}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-lg text-slate-700 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-45"
+                disabled={!canFontSizeChange || fontSize <= minFontSize}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-lg text-slate-700 transition-colors hover:bg-slate-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
                 aria-label="Decrease text size"
               >
                 -
@@ -101,8 +113,8 @@ export function ReaderSettingsPanel({
               <button
                 type="button"
                 onClick={onIncreaseFontSize}
-                disabled={fontSize >= maxFontSize}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-lg text-slate-700 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-45"
+                disabled={!canFontSizeChange || fontSize >= maxFontSize}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-lg text-slate-700 transition-colors hover:bg-slate-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
                 aria-label="Increase text size"
               >
                 +
@@ -124,7 +136,8 @@ export function ReaderSettingsPanel({
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-8 items-center rounded-lg border border-slate-200 px-2.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 md:cursor-pointer"
+            disabled={!canClose}
+            className="inline-flex h-8 items-center rounded-lg border border-slate-200 px-2.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
           >
             Close
           </button>
@@ -142,8 +155,9 @@ export function ReaderSettingsPanel({
                     key={option.value}
                     type="button"
                     onClick={() => onThemeChange(option.value)}
+                    disabled={!canThemeChange}
                     className={cn(
-                      "rounded-lg border px-2 py-2 text-sm font-medium transition-colors md:cursor-pointer",
+                      "rounded-lg border px-2 py-2 text-sm font-medium transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-45",
                       isActive
                         ? "border-slate-900 bg-slate-900 text-white"
                         : "border-slate-200 bg-white text-slate-700 hover:bg-slate-100",
@@ -162,8 +176,8 @@ export function ReaderSettingsPanel({
               <button
                 type="button"
                 onClick={onDecreaseFontSize}
-                disabled={fontSize <= minFontSize}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-lg text-slate-700 transition-colors hover:bg-slate-100 md:cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
+                disabled={!canFontSizeChange || fontSize <= minFontSize}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-lg text-slate-700 transition-colors hover:bg-slate-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
                 aria-label="Decrease text size"
               >
                 -
@@ -172,8 +186,8 @@ export function ReaderSettingsPanel({
               <button
                 type="button"
                 onClick={onIncreaseFontSize}
-                disabled={fontSize >= maxFontSize}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-lg text-slate-700 transition-colors hover:bg-slate-100 md:cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
+                disabled={!canFontSizeChange || fontSize >= maxFontSize}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-lg text-slate-700 transition-colors hover:bg-slate-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45"
                 aria-label="Increase text size"
               >
                 +
