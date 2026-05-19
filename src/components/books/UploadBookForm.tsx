@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Button, buttonClassNames } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { ROUTES } from "@/lib/constants";
+import { INVALID_EPUB_FILE_ERROR, validateEpubFile } from "@/lib/epubValidation";
 import { createClient } from "@/lib/supabase/client";
 import type {
   CancelBookUploadRequest,
@@ -147,21 +148,24 @@ type UploadBookFormProps = {
   creditsBalance: number;
 };
 
+type UploadStatus = "idle" | "validating" | "uploading";
+
 export function UploadBookForm({ creditsBalance }: UploadBookFormProps) {
   const router = useRouter();
   const [validationError, setValidationError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<UploadStatus>("idle");
   const [title, setTitle] = useState("");
   const normalizedCredits = Math.max(0, creditsBalance);
   const hasCredits = normalizedCredits > 0;
+  const isBusy = uploadStatus !== "idle";
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
 
-    if (isUploading) {
+    if (isBusy) {
       return;
     }
 
@@ -208,9 +212,18 @@ export function UploadBookForm({ creditsBalance }: UploadBookFormProps) {
     setValidationError(null);
     setUploadError(null);
     setUploadSuccess(null);
-    setIsUploading(true);
+    setUploadStatus("validating");
 
     try {
+      const epubValidation = await validateEpubFile(selectedFile);
+
+      if (!epubValidation.valid) {
+        setValidationError(epubValidation.error ?? INVALID_EPUB_FILE_ERROR);
+        return;
+      }
+
+      setUploadStatus("uploading");
+
       const createUploadResponse = await fetch("/api/books/create-upload", {
         method: "POST",
         headers: {
@@ -291,7 +304,7 @@ export function UploadBookForm({ creditsBalance }: UploadBookFormProps) {
       setUploadSuccess(null);
       setUploadError(error instanceof Error && error.message ? error.message : UNEXPECTED_UPLOAD_ERROR);
     } finally {
-      setIsUploading(false);
+      setUploadStatus("idle");
     }
   }
 
@@ -407,9 +420,13 @@ export function UploadBookForm({ creditsBalance }: UploadBookFormProps) {
       <Button
         type="submit"
         variant="secondary"
-        disabled={!hasCredits || isUploading || Boolean(validationError)}
+        disabled={!hasCredits || isBusy || Boolean(validationError)}
       >
-        {isUploading ? "Uploading..." : "Upload EPUB"}
+        {uploadStatus === "validating"
+          ? "Validating EPUB..."
+          : uploadStatus === "uploading"
+            ? "Uploading..."
+            : "Upload EPUB"}
       </Button>
     </form>
   );
