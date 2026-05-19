@@ -20,7 +20,7 @@ export default async function RegisterPage({ searchParams }: RegisterPageProps) 
   return (
     <Card
       title="Create account"
-      description="Create your Smart-Reader workspace to upload EPUBs and build your Anki-ready vocabulary deck."
+      description="Create your Smart-Reader account to upload EPUBs and build your Anki-ready vocabulary deck."
     >
       <form action={registerAction} className="space-y-4">
         <div className="space-y-2">

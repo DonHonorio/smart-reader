@@ -2427,7 +2427,8 @@ export function EpubReader({
           return;
         }
 
-        console.error("EpubReader load error:", error);
+        const loadErrorMessage = error instanceof Error ? error.message : "Unknown error";
+        console.error("EpubReader load error:", loadErrorMessage);
 
         failReaderLoad(INVALID_EPUB_OPEN_ERROR);
       }

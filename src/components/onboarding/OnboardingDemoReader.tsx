@@ -261,14 +261,14 @@ export function OnboardingDemoReader({
       });
 
       if (!response.ok) {
-        setSaveError("Could not save this tutorial item right now. Please try again.");
+        setSaveError("Could not save this onboarding item right now. Please try again.");
         return;
       }
 
       setIsSaved(true);
       await onSaveVocabulary?.(demoItem);
     } catch {
-      setSaveError("Could not save this tutorial item right now. Please try again.");
+      setSaveError("Could not save this onboarding item right now. Please try again.");
     }
   }
 
@@ -281,11 +281,11 @@ export function OnboardingDemoReader({
         palette.text,
         className,
       )}
-      aria-label="Demo reader"
+      aria-label="Guided practice reader"
     >
       <ReaderTopBar
-        title="Smart-Reader Demo"
-        author="Internal tutorial content"
+        title="Guided practice reader"
+        author="Onboarding sample text"
         isVisible
         progressPercentage={progress}
         canBack={false}

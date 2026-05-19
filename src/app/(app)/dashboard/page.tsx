@@ -14,7 +14,7 @@ export default async function DashboardPage() {
   const vocabularyCount = dashboardData?.vocabularyCount ?? 0;
   const latestBook = dashboardData?.latestBook ?? null;
   const latestReadingProgress = dashboardData?.latestReadingProgress ?? null;
-  const isNewWorkspace = booksCount === 0 && vocabularyCount === 0;
+  const isNewAccount = booksCount === 0 && vocabularyCount === 0;
   const firstStepHref = creditsBalance > 0 ? ROUTES.library : ROUTES.billing;
   const firstStepLabel = creditsBalance > 0 ? "Upload first book" : "Buy credits";
 
@@ -27,9 +27,9 @@ export default async function DashboardPage() {
         </p>
       </header>
 
-      {isNewWorkspace && (
+      {isNewAccount && (
         <Card
-          title="Welcome to your Smart-Reader workspace"
+          title="Welcome to Smart-Reader"
           description="Start with one book, save useful expressions while reading, and export your deck to Anki when ready."
         >
           <div className="flex flex-wrap gap-3">

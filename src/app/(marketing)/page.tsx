@@ -10,6 +10,7 @@ const LANDING_BENEFITS = [
   "Translate words and phrases in context.",
   "Save vocabulary with context sentences in one click.",
   "Export CSV cards ready for Anki review.",
+  "No subscription. Buy credits only when you need uploads.",
 ] as const;
 
 const HOW_IT_WORKS_STEPS = [
@@ -50,7 +51,8 @@ export default async function MarketingHomePage() {
           </h1>
           <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
             {APP_TAGLINE} Learn from real content by reading naturally, translating in context,
-            and turning useful expressions into review cards.
+            and turning useful expressions into review cards. Pay only for credits, with no
+            monthly subscription.
           </p>
 
           <div className="mt-6 flex flex-wrap gap-3">

@@ -40,7 +40,7 @@ const STEP_CONFIGS: Record<
     title: "Welcome to Smart-Reader",
     description: "You have 1 free credit. This quick tutorial will not use it.",
     expectedPath: ROUTES.dashboard,
-    nextLabel: "Start tutorial",
+    nextLabel: "Start guide",
   },
   2: {
     title: "Your Library",
@@ -113,7 +113,7 @@ const STEP_CONFIGS: Record<
   },
   12: {
     title: "You're Ready!",
-    description: "Press Finish to close the tutorial and start reading with your own library.",
+    description: "Press Finish to close this guide and start reading with your own library.",
     expectedPath: ROUTES.library,
     nextLabel: "Finish",
   },
@@ -365,7 +365,7 @@ export function OnboardingTour({ initialStep }: OnboardingTourProps) {
         const cleaned = await cleanupOnboardingDemoBook();
 
         if (!cleaned) {
-          alert("We could not remove the tutorial book right now. Please try again.");
+          alert("We could not clear the onboarding sample right now. Please try again.");
           return;
         }
       } finally {
