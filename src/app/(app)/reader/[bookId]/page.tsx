@@ -50,8 +50,8 @@ export default async function ReaderBookPage({ params }: ReaderBookPageProps) {
   if (!book) {
     return (
       <ReaderFallback
-        title="We could not load this book."
-        description="Book not found for your account."
+        title="We could not open this book."
+        description="This book was not found in your account library."
         actionLabel="Back to Library"
       />
     );
@@ -65,7 +65,7 @@ export default async function ReaderBookPage({ params }: ReaderBookPageProps) {
     return (
       <ReaderFallback
         title="This book file is missing."
-        description="This EPUB entry has no file path yet."
+        description="This EPUB file is missing in storage. Re-upload it from your library to continue."
         actionLabel="Back to Library"
       />
     );
@@ -79,7 +79,7 @@ export default async function ReaderBookPage({ params }: ReaderBookPageProps) {
   if (signedUrlError || !signedData?.signedUrl) {
     return (
       <ReaderFallback
-        title="We could not load this book."
+        title="We could not open this book."
         description="This reading link expired. Please reopen the book from your library."
         actionLabel="Back to Library"
         retryHref={ROUTES.reader(book.id)}

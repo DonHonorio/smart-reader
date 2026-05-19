@@ -28,8 +28,8 @@ const QUICK_ACTIONS = [
 export function QuickActions() {
   return (
     <Card
-      title="Quick actions"
-      description="Jump directly to the core Smart-Reader workflows."
+      title="Next steps"
+      description="Jump directly into the core Smart-Reader workflows."
     >
       <div className="grid gap-3 sm:grid-cols-2">
         {QUICK_ACTIONS.map((action) => (

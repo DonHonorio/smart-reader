@@ -82,6 +82,7 @@ export function OnboardingDemoReader({
   const [settingsOpenState, setSettingsOpenState] = useState(false);
   const [isWeatherSelected, setIsWeatherSelected] = useState(() => tutorialStep === 8);
   const [isSaved, setIsSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const isStrictMode = typeof tutorialStep === "number";
   const allowOpenSettings = !isStrictMode || tutorialStep === 3;
@@ -113,6 +114,7 @@ export function OnboardingDemoReader({
     setPageState((prev) => Math.min(prev + 1, DEMO_PAGES.length - 1));
     setIsWeatherSelected(false);
     setIsSaved(false);
+    setSaveError(null);
     onNextPage?.();
   }
 
@@ -124,6 +126,7 @@ export function OnboardingDemoReader({
     setPageState((prev) => Math.max(prev - 1, 0));
     setIsWeatherSelected(false);
     setIsSaved(false);
+    setSaveError(null);
   }
 
   function handleThemeChange(newTheme: ReaderTheme) {
@@ -231,6 +234,8 @@ export function OnboardingDemoReader({
     if (!allowSave || !isWeatherSelected) {
       return;
     }
+
+    setSaveError(null);
     
     const demoItem = {
       selectedText: "weather",
@@ -256,14 +261,14 @@ export function OnboardingDemoReader({
       });
 
       if (!response.ok) {
-        alert("Could not save vocabulary");
+        setSaveError("Could not save this tutorial item right now. Please try again.");
         return;
       }
 
       setIsSaved(true);
       await onSaveVocabulary?.(demoItem);
     } catch {
-      alert("Could not save vocabulary");
+      setSaveError("Could not save this tutorial item right now. Please try again.");
     }
   }
 
@@ -360,6 +365,12 @@ export function OnboardingDemoReader({
                 </p>
               ) : null}
             </div>
+
+            {saveError ? (
+              <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-700">
+                {saveError}
+              </p>
+            ) : null}
           </aside>
         ) : null}
       </div>

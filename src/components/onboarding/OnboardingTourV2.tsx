@@ -365,7 +365,7 @@ export function OnboardingTour({ initialStep }: OnboardingTourProps) {
         const cleaned = await cleanupOnboardingDemoBook();
 
         if (!cleaned) {
-          alert("Could not remove tutorial book. Please try again.");
+          alert("We could not remove the tutorial book right now. Please try again.");
           return;
         }
       } finally {

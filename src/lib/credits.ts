@@ -6,7 +6,7 @@ import type { CreditTransaction } from "@/types";
 const SIGNUP_BONUS_AMOUNT = 1;
 const BOOK_UPLOAD_COST = 1;
 
-const INSUFFICIENT_CREDITS_ERROR = "You need 1 credit to upload a new book.";
+const INSUFFICIENT_CREDITS_ERROR = "You need 1 credit to upload a book.";
 const CREDIT_CONSUMPTION_ERROR = "Could not consume your credit. Please try again.";
 const PURCHASE_CREDIT_ERROR = "Could not add purchased credits right now.";
 

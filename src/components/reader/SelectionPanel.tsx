@@ -8,6 +8,31 @@ import type { SaveVocabularyRequest, SaveVocabularyResponse } from "@/types";
 const MAX_SELECTED_TEXT_LENGTH = 300;
 const SELECTED_TEXT_TOO_LONG_ERROR =
   "Selected text is too long. Please select a shorter word or phrase.";
+const TRANSLATION_GENERIC_ERROR =
+  "Translation is temporarily unavailable. Please try again in a moment.";
+
+function normalizeTranslationErrorMessage(value: unknown) {
+  const rawMessage = value instanceof Error ? value.message : "";
+  const normalizedMessage = rawMessage.trim();
+
+  if (!normalizedMessage) {
+    return TRANSLATION_GENERIC_ERROR;
+  }
+
+  const technicalErrorPatterns = [
+    "Empty translation response",
+    "Invalid JSON translation response",
+    "Missing translationUnit or translation",
+    "Invalid unitType",
+    "Invalid isExpanded",
+  ];
+
+  if (technicalErrorPatterns.some((pattern) => normalizedMessage.includes(pattern))) {
+    return TRANSLATION_GENERIC_ERROR;
+  }
+
+  return normalizedMessage;
+}
 
 type SelectionPanelProps = {
   bookId: string;
@@ -162,7 +187,7 @@ export function SelectionPanel({
         const serverError =
           typeof data?.error === "string" && data.error.trim()
             ? data.error
-            : "Could not translate right now.";
+            : TRANSLATION_GENERIC_ERROR;
 
         throw new Error(serverError);
       }
@@ -170,7 +195,7 @@ export function SelectionPanel({
       const normalizedTranslation = normalizeTranslatePayload(data ?? {});
 
       if (!normalizedTranslation) {
-        throw new Error("Empty translation response.");
+        throw new Error(TRANSLATION_GENERIC_ERROR);
       }
 
       setTranslationState({
@@ -179,8 +204,7 @@ export function SelectionPanel({
       });
       setSaveState(null);
     } catch (error) {
-      const message =
-        error instanceof Error && error.message ? error.message : "Could not translate right now.";
+      const message = normalizeTranslationErrorMessage(error);
 
       setErrorState({ key: selectionKey, message });
     } finally {

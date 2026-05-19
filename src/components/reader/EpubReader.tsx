@@ -25,6 +25,9 @@ const LOCATIONS_CACHE_KEY_PREFIX = "smart-reader:locations:";
 const INITIAL_RESTORE_SETTLE_MS = 500;
 const READER_SETTINGS_SETTLE_MS = 700;
 const PENDING_NAVIGATION_REASON_TIMEOUT_MS = 2000;
+const READER_LOAD_TIMEOUT_MS = 10_000;
+const INVALID_EPUB_OPEN_ERROR =
+  "The EPUB file could not be opened. Please upload a valid .epub file.";
 
 const READER_PREFERENCES_STORAGE_KEY = "smart-reader:reader-preferences:v1";
 const DEFAULT_READER_THEME: ReaderTheme = "light";
@@ -542,10 +545,10 @@ function getLoadErrorMessage(status: number) {
   }
 
   if (status === 404) {
-    return "The EPUB file could not be opened.";
+    return INVALID_EPUB_OPEN_ERROR;
   }
 
-  return "We could not load this book.";
+  return "We could not open this book right now. Please try again.";
 }
 
 function getSelectionAnchor(selection: Selection, contents: EpubContents) {
@@ -946,7 +949,7 @@ export function EpubReader({
 
   const [isLoading, setIsLoading] = useState(true);
   const [isReady, setIsReady] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [readerError, setReaderError] = useState<string | null>(null);
   const [selectedText, setSelectedText] = useState("");
   const [contextSentence, setContextSentence] = useState<string | null>(null);
   const [progressPercentage, setProgressPercentage] = useState<number | null>(null);
@@ -1297,7 +1300,7 @@ export function EpubReader({
   }, [router]);
 
   const retryReaderLoad = useCallback(() => {
-    setErrorMessage(null);
+    setReaderError(null);
     clearSelection();
     router.refresh();
   }, [clearSelection, router]);
@@ -1437,6 +1440,7 @@ export function EpubReader({
     let clickHandler: RenditionEventHandler | null = null;
     let isDesktopSelectionPointerDown = false;
     let pendingDesktopSelectionContents: EpubContents | null = null;
+    let loadTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
     const selectionReleaseCleanupCallbacks: Array<() => void> = [];
     const selectionTrackedDocuments = new WeakSet<Document>();
     const container = containerRef.current;
@@ -1456,6 +1460,76 @@ export function EpubReader({
       }
 
       selectionReleaseCleanupCallbacks.length = 0;
+    };
+
+    const clearLoadTimeout = () => {
+      if (!loadTimeoutTimer) {
+        return;
+      }
+
+      clearTimeout(loadTimeoutTimer);
+      loadTimeoutTimer = null;
+    };
+
+    const teardownReaderRuntime = () => {
+      clearStableReadingDebounce();
+      clearPendingNavigationReason();
+      clearRestoreGuardTimer();
+      clearReaderSettingsGuardTimer();
+      isRestoringInitialLocationRef.current = false;
+      isApplyingReaderSettingsRef.current = false;
+      releaseSelectionScrollLock();
+      abortController.abort();
+      isRenditionReadyRef.current = false;
+      locationsReadyRef.current = false;
+
+      if (resizeRendition) {
+        window.removeEventListener("resize", resizeRendition);
+      }
+
+      resizeObserver?.disconnect();
+      clearPendingDesktopClickToggle();
+      clearPendingSelectionRelease();
+
+      if (selectionHandler && renditionRef.current) {
+        getRenditionEvents(renditionRef.current).off("selected", selectionHandler);
+      }
+
+      if (relocatedHandler && renditionRef.current) {
+        getRenditionEvents(renditionRef.current).off("relocated", relocatedHandler);
+      }
+
+      if (clickHandler && renditionRef.current) {
+        getRenditionEvents(renditionRef.current).off("click", clickHandler);
+      }
+
+      renditionRef.current?.destroy();
+      renditionRef.current = null;
+      bookRef.current?.destroy();
+      bookRef.current = null;
+      renderContainer.innerHTML = "";
+    };
+
+    const failReaderLoad = (message: string) => {
+      if (isCancelled) {
+        return;
+      }
+
+      isCancelled = true;
+      clearLoadTimeout();
+      teardownReaderRuntime();
+      latestRestoreLocationRef.current = null;
+      latestProgressPercentageRef.current = null;
+      latestChapterHrefRef.current = null;
+      setSelectedText("");
+      setContextSentence(null);
+      setSelectionAnchor(null);
+      setProgressPercentage(null);
+      setIsSettingsOpen(false);
+      setIsChromeVisible(false);
+      setIsLoading(false);
+      setIsReady(false);
+      setReaderError(message);
     };
 
     const commitSelectionFromContents = (contents: EpubContents) => {
@@ -1572,7 +1646,7 @@ export function EpubReader({
     hasUserNavigatedRef.current = false;
     setIsLoading(true);
     setIsReady(false);
-    setErrorMessage(null);
+    setReaderError(null);
     setSelectedText("");
     setContextSentence(null);
     setSelectionAnchor(null);
@@ -1627,7 +1701,12 @@ export function EpubReader({
     };
 
     const saveStableReadingProgress = async (reason: ReadingProgressSaveReason) => {
-      if (isCancelled || isRestoringInitialLocationRef.current || isApplyingReaderSettingsRef.current) {
+      if (
+        isCancelled ||
+        !isRenditionReadyRef.current ||
+        isRestoringInitialLocationRef.current ||
+        isApplyingReaderSettingsRef.current
+      ) {
         return;
       }
 
@@ -1697,12 +1776,7 @@ export function EpubReader({
         });
 
         if (!response.ok) {
-          if (!isCancelled) {
-            setErrorMessage(getLoadErrorMessage(response.status));
-            setIsLoading(false);
-            setIsReady(false);
-          }
-
+          failReaderLoad(getLoadErrorMessage(response.status));
           return;
         }
 
@@ -1713,6 +1787,13 @@ export function EpubReader({
         }
 
         const book = ePub(epubData);
+
+        await book.ready;
+
+        if (isCancelled) {
+          return;
+        }
+
         const rendition = book.renderTo(renderContainer, {
           width: "100%",
           height: "100%",
@@ -2333,6 +2414,7 @@ export function EpubReader({
         handleResize();
 
         if (!isCancelled) {
+          clearLoadTimeout();
           setIsReady(true);
           setIsLoading(false);
         }
@@ -2347,48 +2429,20 @@ export function EpubReader({
 
         console.error("EpubReader load error:", error);
 
-        if (!isCancelled) {
-          setErrorMessage("The EPUB file could not be opened.");
-          setIsLoading(false);
-          setIsReady(false);
-        }
+        failReaderLoad(INVALID_EPUB_OPEN_ERROR);
       }
     }
+
+    loadTimeoutTimer = setTimeout(() => {
+      failReaderLoad(INVALID_EPUB_OPEN_ERROR);
+    }, READER_LOAD_TIMEOUT_MS);
 
     void mountReader();
 
     return () => {
       isCancelled = true;
-      clearStableReadingDebounce();
-      clearPendingNavigationReason();
-      clearRestoreGuardTimer();
-      clearReaderSettingsGuardTimer();
-      isRestoringInitialLocationRef.current = false;
-      isApplyingReaderSettingsRef.current = false;
-      releaseSelectionScrollLock();
-      abortController.abort();
-      isRenditionReadyRef.current = false;
-      locationsReadyRef.current = false;
-      if (resizeRendition) {
-        window.removeEventListener("resize", resizeRendition);
-      }
-      resizeObserver?.disconnect();
-      clearPendingDesktopClickToggle();
-      clearPendingSelectionRelease();
-      if (selectionHandler && renditionRef.current) {
-        getRenditionEvents(renditionRef.current).off("selected", selectionHandler);
-      }
-      if (relocatedHandler && renditionRef.current) {
-        getRenditionEvents(renditionRef.current).off("relocated", relocatedHandler);
-      }
-      if (clickHandler && renditionRef.current) {
-        getRenditionEvents(renditionRef.current).off("click", clickHandler);
-      }
-      renditionRef.current?.destroy();
-      renditionRef.current = null;
-      bookRef.current?.destroy();
-      bookRef.current = null;
-      renderContainer.innerHTML = "";
+      clearLoadTimeout();
+      teardownReaderRuntime();
     };
   }, [
     bookId,
@@ -2422,7 +2476,7 @@ export function EpubReader({
       await renditionRef.current.prev();
     } catch {
       clearPendingNavigationReason();
-      setErrorMessage("Could not navigate to the previous page.");
+      setReaderError("Could not navigate to the previous page.");
     }
   }, [clearPendingNavigationReason, clearSelection, clearStableReadingDebounce, setPendingNavigationReason]);
 
@@ -2439,7 +2493,7 @@ export function EpubReader({
       await renditionRef.current.next();
     } catch {
       clearPendingNavigationReason();
-      setErrorMessage("Could not navigate to the next page.");
+      setReaderError("Could not navigate to the next page.");
     }
   }, [clearPendingNavigationReason, clearSelection, clearStableReadingDebounce, setPendingNavigationReason]);
 
@@ -2483,15 +2537,15 @@ export function EpubReader({
             style={{ backgroundColor: themePalette.loadingOverlay }}
           >
             <p className={cn("text-sm", theme === "dark" ? "text-slate-200" : "text-slate-600")}>
-              Loading reader...
+              Opening book...
             </p>
           </div>
         )}
 
-        {errorMessage && (
+        {readerError && (
           <div className="absolute left-3 right-3 top-3 z-50 flex justify-center">
             <div className="w-full max-w-md rounded-xl border border-red-200 bg-red-50/95 p-3 shadow-sm backdrop-blur">
-              <p className="text-sm text-red-700">{errorMessage}</p>
+              <p className="text-sm text-red-700">{readerError}</p>
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
                   type="button"

@@ -73,8 +73,14 @@ export default async function LibraryPage({
 
       {!hasUploadCredits && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900 sm:px-6">
-          <p className="font-medium">You have no credits available.</p>
-          <p className="mt-1">Buy credits to upload your next book.</p>
+          <p className="font-medium">
+            {hasBooks
+              ? "You have no credits available."
+              : "Your library is empty and you have no credits available."}
+          </p>
+          <p className="mt-1">
+            {hasBooks ? "Buy credits to upload your next book." : "Buy credits to upload your first EPUB."}
+          </p>
           <Link
             href={ROUTES.billing}
             className={buttonClassNames({ variant: "secondary", size: "sm", className: "mt-3" })}

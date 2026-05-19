@@ -78,6 +78,59 @@ export type CreateCheckoutSessionResponse =
 
 export type CheckoutStatus = "success" | "cancelled";
 
+export type CreateBookUploadRequest = {
+  title: string;
+  author?: string | null;
+  language_from: string;
+  language_to: string;
+  fileName: string;
+  fileSize: number;
+  fileType?: string | null;
+};
+
+export type CreateBookUploadSuccessResponse = {
+  bookId: string;
+  path: string;
+  signedUrl: string;
+  token: string;
+};
+
+export type CreateBookUploadResponse =
+  | CreateBookUploadSuccessResponse
+  | {
+      error: string;
+    };
+
+export type CompleteBookUploadRequest = {
+  bookId: string;
+  filePath: string;
+};
+
+export type CompleteBookUploadResponse =
+  | {
+      success: true;
+      bookId: string;
+      filePath: string;
+      creditsBalance: number;
+    }
+  | {
+      error: string;
+    };
+
+export type CancelBookUploadRequest = {
+  bookId: string;
+  filePath?: string;
+};
+
+export type CancelBookUploadResponse =
+  | {
+      success: true;
+      cancelled: boolean;
+    }
+  | {
+      error: string;
+    };
+
 export type ReaderTheme = "light" | "dark" | "sepia";
 
 export type ReadingProgressSaveReason = "next" | "prev" | "stable_reading" | "manual";

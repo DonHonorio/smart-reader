@@ -79,9 +79,12 @@ export function AppHeader({ creditsBalance = null }: AppHeaderProps) {
           ) : (
             <>
               <div className="min-w-0">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Private workspace
-                </p>
+                <Link
+                  href={ROUTES.dashboard}
+                  className="text-xs font-semibold uppercase tracking-wide text-slate-500 hover:text-slate-700"
+                >
+                  {APP_TITLE}
+                </Link>
                 <h1 className="text-xl font-semibold tracking-tight text-slate-900">{sectionName}</h1>
               </div>
               <div className="flex items-center gap-2">

@@ -20,7 +20,7 @@ export default async function RegisterPage({ searchParams }: RegisterPageProps) 
   return (
     <Card
       title="Create account"
-      description="Start your Smart-Reader workspace. Registration logic will be connected in a later step."
+      description="Create your Smart-Reader workspace to upload EPUBs and build your Anki-ready vocabulary deck."
     >
       <form action={registerAction} className="space-y-4">
         <div className="space-y-2">
@@ -45,7 +45,7 @@ export default async function RegisterPage({ searchParams }: RegisterPageProps) 
             name="password"
             type="password"
             autoComplete="new-password"
-            placeholder="Minimum 8 characters"
+            placeholder="At least 6 characters"
             required
             minLength={6}
           />

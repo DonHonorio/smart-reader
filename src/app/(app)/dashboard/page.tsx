@@ -1,6 +1,9 @@
+import Link from "next/link";
 import { ContinueReadingCard } from "@/components/dashboard/ContinueReadingCard";
 import { QuickActions } from "@/components/dashboard/QuickActions";
 import { StatCard } from "@/components/dashboard/StatCard";
+import { buttonClassNames } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
 import { ROUTES } from "@/lib/constants";
 import { getDashboardData } from "@/lib/dashboard";
 
@@ -11,6 +14,9 @@ export default async function DashboardPage() {
   const vocabularyCount = dashboardData?.vocabularyCount ?? 0;
   const latestBook = dashboardData?.latestBook ?? null;
   const latestReadingProgress = dashboardData?.latestReadingProgress ?? null;
+  const isNewWorkspace = booksCount === 0 && vocabularyCount === 0;
+  const firstStepHref = creditsBalance > 0 ? ROUTES.library : ROUTES.billing;
+  const firstStepLabel = creditsBalance > 0 ? "Upload first book" : "Buy credits";
 
   return (
     <section className="mx-auto w-full max-w-6xl space-y-6">
@@ -20,6 +26,22 @@ export default async function DashboardPage() {
           Track your progress, review your stats, and continue reading in one place.
         </p>
       </header>
+
+      {isNewWorkspace && (
+        <Card
+          title="Welcome to your Smart-Reader workspace"
+          description="Start with one book, save useful expressions while reading, and export your deck to Anki when ready."
+        >
+          <div className="flex flex-wrap gap-3">
+            <Link href={firstStepHref} className={buttonClassNames({ variant: "secondary", size: "sm" })}>
+              {firstStepLabel}
+            </Link>
+            <Link href={ROUTES.vocabulary} className={buttonClassNames({ variant: "ghost", size: "sm" })}>
+              Open vocabulary
+            </Link>
+          </div>
+        </Card>
+      )}
 
       <div className="grid gap-4 md:grid-cols-3">
         <StatCard

@@ -33,8 +33,8 @@ export function PlaceholderPage({
       </div>
 
       <Card
-        title="Quick actions"
-        description="Use these links to navigate the current MVP scaffold."
+        title="Useful links"
+        description="Use these links to navigate Smart-Reader."
         className={cn(!hasActions && !children && "hidden")}
       >
         <div className={cn("flex flex-wrap gap-3", !hasActions && "hidden")}>

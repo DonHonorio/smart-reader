@@ -14,6 +14,7 @@ export function OnboardingVocabularyView({
 }: OnboardingVocabularyViewProps) {
   const [items, setItems] = useState<VocabularyItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   useEffect(() => {
     async function fetchVocabulary() {
@@ -34,13 +35,15 @@ export function OnboardingVocabularyView({
   }, []);
 
   async function handleExport() {
+    setExportError(null);
+
     try {
       const response = await fetch("/api/export/anki", {
         method: "GET",
       });
 
       if (!response.ok) {
-        alert("Export failed");
+        setExportError("Could not export vocabulary right now. Please try again.");
         return;
       }
 
@@ -56,7 +59,7 @@ export function OnboardingVocabularyView({
 
       onExport?.();
     } catch {
-      alert("Export failed");
+      setExportError("Could not export vocabulary right now. Please try again.");
     }
   }
 
@@ -97,13 +100,20 @@ export function OnboardingVocabularyView({
       )}
 
       {showExportButton ? (
-        <button
-          type="button"
-          onClick={handleExport}
-          className="mt-3 w-full rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-700"
-        >
-          Export as CSV
-        </button>
+        <div className="mt-3 space-y-2">
+          <button
+            type="button"
+            onClick={handleExport}
+            className="w-full rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-700"
+          >
+            Export as CSV
+          </button>
+          {exportError && (
+            <p className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-2 text-xs text-red-700">
+              {exportError}
+            </p>
+          )}
+        </div>
       ) : null}
     </div>
   );

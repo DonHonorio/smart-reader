@@ -14,7 +14,9 @@ export function CreditTransactionList({ transactions }: CreditTransactionListPro
       </div>
 
       {transactions.length === 0 ? (
-        <p className="px-4 py-5 text-sm text-slate-600 sm:px-6">No credit activity yet.</p>
+        <p className="px-4 py-5 text-sm text-slate-600 sm:px-6">
+          No transactions yet. Your purchases and book uploads will appear here.
+        </p>
       ) : (
         <ul className="divide-y divide-slate-200 px-4 sm:px-6">
           {transactions.map((transaction) => (

@@ -9,7 +9,8 @@ type CreditPackCardProps = {
   pack: CreditPack;
 };
 
-const CHECKOUT_START_ERROR_MESSAGE = "Could not start checkout. Please try again.";
+const CHECKOUT_START_ERROR_MESSAGE =
+  "We could not start Stripe checkout right now. Please try again.";
 
 export function CreditPackCard({ pack }: CreditPackCardProps) {
   const [isLoading, setIsLoading] = useState(false);
@@ -41,7 +42,12 @@ export function CreditPackCard({ pack }: CreditPackCardProps) {
       }
 
       if (!response.ok) {
-        throw new Error(CHECKOUT_START_ERROR_MESSAGE);
+        const checkoutError =
+          payload && "error" in payload && typeof payload.error === "string"
+            ? payload.error
+            : CHECKOUT_START_ERROR_MESSAGE;
+
+        throw new Error(checkoutError);
       }
 
       if (!payload || !("url" in payload) || typeof payload.url !== "string" || !payload.url) {
@@ -49,9 +55,9 @@ export function CreditPackCard({ pack }: CreditPackCardProps) {
       }
 
       window.location.href = payload.url;
-    } catch {
+    } catch (error) {
       setIsLoading(false);
-      setError(CHECKOUT_START_ERROR_MESSAGE);
+      setError(error instanceof Error && error.message ? error.message : CHECKOUT_START_ERROR_MESSAGE);
     }
   }
 

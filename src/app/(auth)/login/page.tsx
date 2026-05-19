@@ -20,7 +20,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   return (
     <Card
       title="Login"
-      description="Sign in to continue reading and saving vocabulary. Authentication logic will be connected in a later step."
+      description="Sign in to continue reading, translating in context, and saving vocabulary."
     >
       <form action={loginAction} className="space-y-4">
         <div className="space-y-2">

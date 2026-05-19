@@ -5,24 +5,94 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button, buttonClassNames } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import {
-  uploadBookAction,
-  type UploadBookActionState,
-} from "@/app/(app)/library/actions";
 import { ROUTES } from "@/lib/constants";
+import { createClient } from "@/lib/supabase/client";
+import type {
+  CancelBookUploadRequest,
+  CompleteBookUploadResponse,
+  CreateBookUploadResponse,
+} from "@/types";
 
 const MAX_EPUB_SIZE_BYTES = 25 * 1024 * 1024;
 const MAX_TITLE_LENGTH = 160;
 const MAX_SUGGESTED_TITLE_LENGTH = 120;
 const FILE_TOO_LARGE_ERROR = "The EPUB file is too large. Maximum size is 25 MB.";
+const FILE_TYPE_ERROR = "Only EPUB files are supported.";
 const TITLE_TOO_LONG_ERROR = "Title is too long. Maximum length is 160 characters.";
-const UNEXPECTED_UPLOAD_ERROR =
-  "Could not upload this file. If it is stored in Google Drive or another cloud provider, download it to your device first and try again.";
+const UNEXPECTED_UPLOAD_ERROR = "Could not upload this file. Please try again.";
 const INSUFFICIENT_CREDITS_FORM_ERROR = "You need 1 credit to upload a book.";
 
-const initialUploadBookActionState: UploadBookActionState = {
-  error: null,
-};
+type CreateUploadSuccessPayload = Extract<CreateBookUploadResponse, { bookId: string }>;
+type CompleteUploadSuccessPayload = Extract<CompleteBookUploadResponse, { success: true }>;
+
+function isCreateUploadSuccessPayload(
+  payload: CreateBookUploadResponse | null,
+): payload is CreateUploadSuccessPayload {
+  return Boolean(
+    payload &&
+      typeof payload === "object" &&
+      "bookId" in payload &&
+      typeof payload.bookId === "string" &&
+      "path" in payload &&
+      typeof payload.path === "string" &&
+      "token" in payload &&
+      typeof payload.token === "string",
+  );
+}
+
+function isCompleteUploadSuccessPayload(
+  payload: CompleteBookUploadResponse | null,
+): payload is CompleteUploadSuccessPayload {
+  return Boolean(
+    payload &&
+      typeof payload === "object" &&
+      "success" in payload &&
+      payload.success === true,
+  );
+}
+
+function getApiErrorMessage(payload: unknown) {
+  if (!payload || typeof payload !== "object") {
+    return UNEXPECTED_UPLOAD_ERROR;
+  }
+
+  const maybeError = (payload as { error?: unknown }).error;
+
+  if (typeof maybeError !== "string") {
+    return UNEXPECTED_UPLOAD_ERROR;
+  }
+
+  const normalizedError = maybeError.trim();
+  return normalizedError || UNEXPECTED_UPLOAD_ERROR;
+}
+
+async function parseJsonResponse<T>(response: Response): Promise<T | null> {
+  try {
+    return (await response.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+function isSupportedEpubFile(file: File | null | undefined) {
+  if (!file) {
+    return false;
+  }
+
+  return file.name.trim().toLowerCase().endsWith(".epub");
+}
+
+function getFileTypeError(file: File | null | undefined) {
+  if (!file) {
+    return null;
+  }
+
+  if (!isSupportedEpubFile(file)) {
+    return FILE_TYPE_ERROR;
+  }
+
+  return null;
+}
 
 function getFileSizeError(file: File | null | undefined) {
   if (!file) {
@@ -56,7 +126,21 @@ function getSuggestedTitleFromFileName(fileName: string) {
 }
 
 function getClientValidationError(title: string, file: File | null | undefined) {
-  return getTitleLengthError(title) ?? getFileSizeError(file);
+  return getTitleLengthError(title) ?? getFileTypeError(file) ?? getFileSizeError(file);
+}
+
+async function requestCancelUpload(payload: CancelBookUploadRequest) {
+  try {
+    await fetch("/api/books/cancel-upload", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    // Best effort cleanup to avoid orphan books/uploads.
+  }
 }
 
 type UploadBookFormProps = {
@@ -82,19 +166,37 @@ export function UploadBookForm({ creditsBalance }: UploadBookFormProps) {
     }
 
     if (!hasCredits) {
-      setUploadError(null);
+      setUploadError(INSUFFICIENT_CREDITS_FORM_ERROR);
       setUploadSuccess(null);
       return;
     }
 
     const titleInput = form.elements.namedItem("title");
+    const authorInput = form.elements.namedItem("author");
+    const languageFromInput = form.elements.namedItem("language_from");
+    const languageToInput = form.elements.namedItem("language_to");
     const fileInput = form.elements.namedItem("file");
 
-    if (!(titleInput instanceof HTMLInputElement) || !(fileInput instanceof HTMLInputElement)) {
+    if (
+      !(titleInput instanceof HTMLInputElement) ||
+      !(authorInput instanceof HTMLInputElement) ||
+      !(languageFromInput instanceof HTMLInputElement) ||
+      !(languageToInput instanceof HTMLInputElement) ||
+      !(fileInput instanceof HTMLInputElement)
+    ) {
       return;
     }
 
-    const nextValidationError = getClientValidationError(titleInput.value, fileInput.files?.[0]);
+    const selectedFile = fileInput.files?.[0] ?? null;
+
+    if (!selectedFile) {
+      setValidationError(FILE_TYPE_ERROR);
+      setUploadError(null);
+      setUploadSuccess(null);
+      return;
+    }
+
+    const nextValidationError = getClientValidationError(titleInput.value, selectedFile);
 
     if (nextValidationError) {
       setValidationError(nextValidationError);
@@ -109,13 +211,73 @@ export function UploadBookForm({ creditsBalance }: UploadBookFormProps) {
     setIsUploading(true);
 
     try {
-      const formData = new FormData(form);
-      const result = await uploadBookAction(initialUploadBookActionState, formData);
+      const createUploadResponse = await fetch("/api/books/create-upload", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: titleInput.value,
+          author: authorInput.value,
+          language_from: languageFromInput.value,
+          language_to: languageToInput.value,
+          fileName: selectedFile.name,
+          fileSize: selectedFile.size,
+          fileType: selectedFile.type,
+        }),
+      });
 
-      if (result.error) {
-        setUploadError(result.error);
-        setUploadSuccess(null);
-        return;
+      const createUploadPayload = await parseJsonResponse<CreateBookUploadResponse>(
+        createUploadResponse,
+      );
+
+      if (!createUploadResponse.ok || !isCreateUploadSuccessPayload(createUploadPayload)) {
+        throw new Error(getApiErrorMessage(createUploadPayload));
+      }
+
+      const pendingUpload = {
+        bookId: createUploadPayload.bookId,
+        filePath: createUploadPayload.path,
+      };
+
+      const supabase = createClient();
+      const { error: signedUploadError } = await supabase.storage
+        .from("books")
+        .uploadToSignedUrl(createUploadPayload.path, createUploadPayload.token, selectedFile, {
+          contentType: selectedFile.type || "application/epub+zip",
+        });
+
+      if (signedUploadError) {
+        await requestCancelUpload({
+          bookId: pendingUpload.bookId,
+          filePath: pendingUpload.filePath,
+        });
+
+        throw new Error(UNEXPECTED_UPLOAD_ERROR);
+      }
+
+      const completeUploadResponse = await fetch("/api/books/complete-upload", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          bookId: pendingUpload.bookId,
+          filePath: pendingUpload.filePath,
+        }),
+      });
+
+      const completeUploadPayload = await parseJsonResponse<CompleteBookUploadResponse>(
+        completeUploadResponse,
+      );
+
+      if (!completeUploadResponse.ok || !isCompleteUploadSuccessPayload(completeUploadPayload)) {
+        await requestCancelUpload({
+          bookId: pendingUpload.bookId,
+          filePath: pendingUpload.filePath,
+        });
+
+        throw new Error(getApiErrorMessage(completeUploadPayload));
       }
 
       form.reset();
@@ -125,9 +287,9 @@ export function UploadBookForm({ creditsBalance }: UploadBookFormProps) {
       setUploadSuccess("Book uploaded successfully. 1 credit was used.");
       router.refresh();
     } catch (error) {
-      console.error("UploadBookForm unexpected upload error:", error);
+      console.error("UploadBookForm upload flow error:", error);
       setUploadSuccess(null);
-      setUploadError(UNEXPECTED_UPLOAD_ERROR);
+      setUploadError(error instanceof Error && error.message ? error.message : UNEXPECTED_UPLOAD_ERROR);
     } finally {
       setIsUploading(false);
     }

@@ -7,6 +7,10 @@ import type {
   ReadingProgressSaveReason,
 } from "@/types";
 
+export const BOOKS_BUCKET = "books";
+export const MAX_BOOK_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
+export const MAX_BOOK_TITLE_LENGTH = 160;
+
 const BOOK_FIELDS =
   "id, user_id, title, author, language_from, language_to, file_path, cover_path, status, created_at, updated_at";
 
@@ -60,6 +64,24 @@ function toTimestamp(value: string | null | undefined) {
 
   const timestamp = new Date(value).getTime();
   return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+export function normalizeBookText(value: unknown) {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  return value.replace(/\s+/g, " ").trim();
+}
+
+export function isSupportedEpubFileName(fileName: string) {
+  const normalizedFileName = normalizeBookText(fileName);
+
+  if (!normalizedFileName) {
+    return false;
+  }
+
+  return normalizedFileName.toLowerCase().endsWith(".epub");
 }
 
 export function buildBookStoragePath(userId: string, bookId: string) {

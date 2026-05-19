@@ -11,7 +11,7 @@ export function EmptyLibraryState({ uploadHref = "#upload-book-panel" }: EmptyLi
     <Card
       className="text-center"
       title="No books yet"
-      description="Upload your first EPUB to start building Anki-ready vocabulary."
+      description="Upload your first EPUB to start reading and collecting Anki-ready vocabulary."
     >
       <div className="flex justify-center">
         <Link href={uploadHref} className={buttonClassNames({ variant: "secondary" })}>
