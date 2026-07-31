@@ -23,7 +23,20 @@ type InsertVocabularyPayload = {
   unit_type: string;
   confidence: string;
   status: "saved";
+  book_translation_id?: string | null;
 };
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function normalizeOptionalBookTranslationId(value: unknown) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim();
+
+  return UUID_PATTERN.test(normalized) ? normalized : null;
+}
 
 function normalizeText(value: string) {
   return value.replace(/\s+/g, " ").trim();
@@ -207,7 +220,10 @@ export async function POST(request: Request) {
     contextSentence,
     unitType,
     confidence,
+    bookTranslationId,
   } = (body ?? {}) as Partial<SaveVocabularyRequest>;
+
+  const normalizedBookTranslationId = normalizeOptionalBookTranslationId(bookTranslationId);
 
   const validatedBookId = validateRequiredString(bookId, "bookId", 200);
 
@@ -336,6 +352,41 @@ export async function POST(request: Request) {
       }
     }
 
+    // A persistent translation can only produce one vocabulary item.
+    if (normalizedBookTranslationId) {
+      const { data: existingLinkedItem, error: existingLinkedItemError } = await supabase
+        .from("vocabulary_items")
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("book_translation_id", normalizedBookTranslationId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      // Ignore 42703: older schemas without the link column fall back to the term check.
+      if (existingLinkedItemError && existingLinkedItemError.code !== "42703") {
+        console.error(
+          "/api/vocabulary linked duplicate check error:",
+          existingLinkedItemError.message,
+        );
+        const mappedError = mapSupabaseError(
+          existingLinkedItemError,
+          "Could not verify existing vocabulary item.",
+        );
+        return jsonError(mappedError.message, mappedError.status);
+      }
+
+      if (existingLinkedItem) {
+        const linkedPayload: SaveVocabularyResponse = {
+          item: existingLinkedItem as VocabularyItem,
+          status: "already_exists",
+          message: "This item was already saved.",
+        };
+
+        return NextResponse.json(linkedPayload);
+      }
+    }
+
     const { data: existingItem, error: existingItemError } = await supabase
       .from("vocabulary_items")
       .select("*")
@@ -379,6 +430,7 @@ export async function POST(request: Request) {
       unit_type: validatedUnitType.value,
       confidence: validatedConfidence.value,
       status: "saved",
+      ...(normalizedBookTranslationId ? { book_translation_id: normalizedBookTranslationId } : {}),
     };
 
     let savedWithLegacyShape = false;
@@ -387,6 +439,40 @@ export async function POST(request: Request) {
     {
       const insertResult = await supabase.from("vocabulary_items").insert(insertPayload);
       insertError = insertResult.error;
+    }
+
+    // A concurrent save already linked this translation: reuse it instead of failing.
+    if (insertError?.code === "23505" && normalizedBookTranslationId) {
+      const { data: concurrentItem } = await supabase
+        .from("vocabulary_items")
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("book_translation_id", normalizedBookTranslationId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (concurrentItem) {
+        const concurrentPayload: SaveVocabularyResponse = {
+          item: concurrentItem as VocabularyItem,
+          status: "already_exists",
+          message: "This item was already saved.",
+        };
+
+        return NextResponse.json(concurrentPayload);
+      }
+    }
+
+    // Fallback for schemas without the book_translations link column.
+    if (insertError?.code === "42703" && normalizedBookTranslationId) {
+      const { book_translation_id: _unusedTranslationLink, ...payloadWithoutLink } = insertPayload;
+      void _unusedTranslationLink;
+
+      const unlinkedInsertResult = await supabase
+        .from("vocabulary_items")
+        .insert(payloadWithoutLink);
+
+      insertError = unlinkedInsertResult.error;
     }
 
     // Fallback for older schemas that do not yet include canonical/unit/confidence fields.

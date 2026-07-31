@@ -7,10 +7,20 @@ import { ReaderControls } from "@/components/reader/ReaderControls";
 import { ReaderSettingsPanel } from "@/components/reader/ReaderSettingsPanel";
 import { ReaderTopBar } from "@/components/reader/ReaderTopBar";
 import { SelectionPanel } from "@/components/reader/SelectionPanel";
+import {
+  buildLocalBookTranslation,
+  buildTranslationCacheKey,
+  fetchChapterBookTranslations,
+  isPersistedTranslationId,
+  logBookTranslationEvent,
+  persistBookTranslation,
+} from "@/lib/bookTranslations";
 import { ROUTES } from "@/lib/constants";
 import { extractContextSentenceFromSelection } from "@/lib/text";
 import { cn } from "@/lib/utils";
 import type {
+  BookTranslation,
+  CreateBookTranslationRequest,
   EpubReaderProps,
   ReadingProgressSaveReason,
   ReaderPreferences,
@@ -37,6 +47,9 @@ const MAX_READER_FONT_SIZE = 150;
 const READER_FONT_SIZE_STEP = 10;
 const DESKTOP_SPREAD_BREAKPOINT = 1024;
 const DESKTOP_SINGLE_CLICK_DELAY_MS = 220;
+// On touch devices a highlight emits "markClicked" on touchstart, so the click of that
+// same tap arrives afterwards and must not close the panel it just opened.
+const TOUCH_MARK_CLICK_FOLLOW_UP_MS = 500;
 const INITIAL_RESTORE_PROGRESS_DELTA_THRESHOLD = 0.4;
 const PANEL_VIEWPORT_MARGIN = 12;
 const PANEL_SELECTION_GAP = 10;
@@ -86,6 +99,29 @@ const READER_THEME_PALETTE: Record<
 const EPUB_SELECTION_BACKGROUND = "#f1cafc";
 const DARK_THEME_SELECTION_TEXT = "#111827";
 const EPUB_SELECTION_STYLE_ELEMENT_ID = "smart-reader-selection-style";
+
+const TRANSLATION_HIGHLIGHT_TYPE = "highlight";
+const TRANSLATION_HIGHLIGHT_CLASS_NAME = "smart-reader-translation-highlight";
+
+// Same family as the selection color so a translated range reads as "already translated"
+// without competing with the text. Dark theme lightens instead of multiplying.
+const TRANSLATION_HIGHLIGHT_STYLES: Record<ReaderTheme, Record<string, string>> = {
+  light: {
+    fill: EPUB_SELECTION_BACKGROUND,
+    "fill-opacity": "0.45",
+    "mix-blend-mode": "multiply",
+  },
+  sepia: {
+    fill: EPUB_SELECTION_BACKGROUND,
+    "fill-opacity": "0.5",
+    "mix-blend-mode": "multiply",
+  },
+  dark: {
+    fill: EPUB_SELECTION_BACKGROUND,
+    "fill-opacity": "0.24",
+    "mix-blend-mode": "screen",
+  },
+};
 
 type RelocatedPayload = {
   percentage?: unknown;
@@ -151,6 +187,22 @@ type RenditionManagerApi = {
 
 type RenditionManagerRefApi = {
   manager?: RenditionManagerApi;
+};
+
+type RenditionAnnotationsApi = {
+  add: (
+    type: string,
+    cfiRange: string,
+    data?: Record<string, unknown>,
+    cb?: (event: Event) => void,
+    className?: string,
+    styles?: Record<string, string>,
+  ) => unknown;
+  remove: (cfiRange: string, type: string) => unknown;
+};
+
+type EpubSpineApi = {
+  get?: (target: string) => { href?: unknown } | null;
 };
 
 type SelectionAnchor = {
@@ -551,12 +603,7 @@ function getLoadErrorMessage(status: number) {
   return "We could not open this book right now. Please try again.";
 }
 
-function getSelectionAnchor(selection: Selection, contents: EpubContents) {
-  if (selection.rangeCount === 0) {
-    return null;
-  }
-
-  const range = selection.getRangeAt(0);
+function getRangeAnchor(range: Range, contents: EpubContents) {
   let rangeRect = range.getBoundingClientRect();
 
   if (rangeRect.width === 0 || rangeRect.height === 0) {
@@ -588,6 +635,97 @@ function getSelectionAnchor(selection: Selection, contents: EpubContents) {
   }
 
   return { centerX, top, bottom } as SelectionAnchor;
+}
+
+function getSelectionAnchor(selection: Selection, contents: EpubContents) {
+  if (selection.rangeCount === 0) {
+    return null;
+  }
+
+  return getRangeAnchor(selection.getRangeAt(0), contents);
+}
+
+function getRenditionAnnotations(rendition: Rendition | null) {
+  if (!rendition) {
+    return null;
+  }
+
+  const annotations = (
+    rendition as unknown as { annotations?: Partial<RenditionAnnotationsApi> }
+  ).annotations;
+
+  if (!annotations || typeof annotations.add !== "function") {
+    return null;
+  }
+
+  return annotations as RenditionAnnotationsApi;
+}
+
+/**
+ * Canonical chapter for a CFI. Derived from the spine so the same value is used
+ * when storing a translation and when loading a chapter, even in two-page spreads
+ * where the visible start and end belong to different chapters.
+ */
+function getChapterHrefForCfi(book: EpubBook | null, cfi: string | null) {
+  const normalizedCfi = normalizeCfi(cfi);
+
+  if (!book || !normalizedCfi) {
+    return null;
+  }
+
+  try {
+    const spine = (book as unknown as { spine?: EpubSpineApi }).spine;
+    const section = spine?.get?.(normalizedCfi);
+
+    return normalizeChapterHref(section?.href);
+  } catch {
+    return null;
+  }
+}
+
+function getCfiRangeFromSelection(selection: Selection, contents: EpubContents) {
+  if (selection.rangeCount === 0) {
+    return null;
+  }
+
+  try {
+    return normalizeCfi(contents.cfiFromRange(selection.getRangeAt(0)));
+  } catch {
+    return null;
+  }
+}
+
+function getContentsRange(contents: EpubContents | null, cfiRange: string) {
+  if (!contents) {
+    return null;
+  }
+
+  try {
+    return contents.range(cfiRange) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Highlights are SVG groups rendered outside the EPUB document, so a theme change
+ * only needs to repaint them instead of re-registering every annotation.
+ */
+function repaintTranslationHighlights(container: HTMLElement | null, theme: ReaderTheme) {
+  if (!container) {
+    return;
+  }
+
+  const styles = TRANSLATION_HIGHLIGHT_STYLES[theme];
+  const highlightGroups = container.querySelectorAll<SVGElement>(
+    `.${TRANSLATION_HIGHLIGHT_CLASS_NAME}`,
+  );
+
+  highlightGroups.forEach((group) => {
+    group.setAttribute("fill", styles.fill);
+    group.setAttribute("fill-opacity", styles["fill-opacity"]);
+    group.style.mixBlendMode = styles["mix-blend-mode"];
+  });
 }
 
 function isReaderTheme(value: unknown): value is ReaderTheme {
@@ -946,12 +1084,27 @@ export function EpubReader({
   const selectionLockedScrollLeftRef = useRef<number | null>(null);
   const selectionLockedScrollTopRef = useRef<number | null>(null);
   const isSyncingSelectionScrollRef = useRef(false);
+  const targetLanguageRef = useRef(targetLanguage);
+  const translationsByCfiRef = useRef(new Map<string, BookTranslation>());
+  const savedVocabularyTranslationIdsRef = useRef(new Set<string>());
+  const appliedHighlightCfisRef = useRef(new Set<string>());
+  const loadedChapterHrefsRef = useRef(new Set<string>());
+  const loadingChapterHrefsRef = useRef(new Set<string>());
+  const panelSourceRef = useRef<"selection" | "highlight" | null>(null);
+  const selectionCfiRangeRef = useRef<string | null>(null);
+  const pendingMobileUiToggleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Invalidates in-flight chapter loads when the reader runtime is torn down.
+  const readerRuntimeIdRef = useRef(0);
 
   const [isLoading, setIsLoading] = useState(true);
   const [isReady, setIsReady] = useState(false);
   const [readerError, setReaderError] = useState<string | null>(null);
   const [selectedText, setSelectedText] = useState("");
   const [contextSentence, setContextSentence] = useState<string | null>(null);
+  const [selectionCfiRange, setSelectionCfiRange] = useState<string | null>(null);
+  const [selectionChapterHref, setSelectionChapterHref] = useState<string | null>(null);
+  const [activeTranslation, setActiveTranslation] = useState<BookTranslation | null>(null);
+  const [isActiveTranslationSaved, setIsActiveTranslationSaved] = useState(false);
   const [progressPercentage, setProgressPercentage] = useState<number | null>(null);
   const [isChromeVisible, setIsChromeVisible] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -1039,7 +1192,9 @@ export function EpubReader({
   }, [clearReaderSettingsGuardTimer]);
 
   const hasActiveTextSelection = useCallback(() => {
-    if (selectedTextRef.current.trim().length > 0) {
+    // A panel opened from a highlight has no native selection, so it must not
+    // block swipe navigation the way a real selection does.
+    if (panelSourceRef.current !== "highlight" && selectedTextRef.current.trim().length > 0) {
       return true;
     }
 
@@ -1137,6 +1292,14 @@ export function EpubReader({
   }, [isMobileViewport]);
 
   useEffect(() => {
+    targetLanguageRef.current = targetLanguage;
+  }, [targetLanguage]);
+
+  useEffect(() => {
+    selectionCfiRangeRef.current = selectionCfiRange;
+  }, [selectionCfiRange]);
+
+  useEffect(() => {
     if (selectedText) {
       syncSelectionScrollLock();
       return;
@@ -1218,6 +1381,7 @@ export function EpubReader({
     clearStableReadingDebounce();
     applyReaderAppearance(rendition, theme, fontSize);
     applySelectionStylesToRendition(rendition, theme);
+    repaintTranslationHighlights(containerRef.current, theme);
     scheduleReaderSettingsGuardRelease();
   }, [clearStableReadingDebounce, scheduleReaderSettingsGuardRelease, theme, fontSize]);
 
@@ -1249,9 +1413,14 @@ export function EpubReader({
   const clearSelection = useCallback(() => {
     const nativeSelection = selectedContentsRef.current?.window.getSelection();
     nativeSelection?.removeAllRanges();
+    panelSourceRef.current = null;
     setSelectedText("");
     setContextSentence(null);
     setSelectionAnchor(null);
+    setSelectionCfiRange(null);
+    setSelectionChapterHref(null);
+    setActiveTranslation(null);
+    setIsActiveTranslationSaved(false);
     releaseSelectionScrollLock();
   }, [releaseSelectionScrollLock]);
 
@@ -1260,6 +1429,175 @@ export function EpubReader({
       clearTimeout(pendingDesktopClickTimerRef.current);
       pendingDesktopClickTimerRef.current = null;
     }
+  }, []);
+
+  const clearPendingMobileUiToggle = useCallback(() => {
+    if (pendingMobileUiToggleTimerRef.current) {
+      clearTimeout(pendingMobileUiToggleTimerRef.current);
+      pendingMobileUiToggleTimerRef.current = null;
+    }
+  }, []);
+
+  const getTranslationCacheKey = useCallback(
+    (cfiRange: string) => buildTranslationCacheKey(cfiRange, targetLanguageRef.current),
+    [],
+  );
+
+  const cacheTranslation = useCallback(
+    (translation: BookTranslation) => {
+      translationsByCfiRef.current.set(getTranslationCacheKey(translation.cfiRange), translation);
+    },
+    [getTranslationCacheKey],
+  );
+
+  const getCachedTranslation = useCallback(
+    (cfiRange: string | null) => {
+      if (!cfiRange) {
+        return null;
+      }
+
+      return translationsByCfiRef.current.get(getTranslationCacheKey(cfiRange)) ?? null;
+    },
+    [getTranslationCacheKey],
+  );
+
+  const applyTranslationHighlight = useCallback((cfiRange: string) => {
+    const annotations = getRenditionAnnotations(renditionRef.current);
+
+    if (!annotations || appliedHighlightCfisRef.current.has(cfiRange)) {
+      return;
+    }
+
+    try {
+      annotations.add(
+        TRANSLATION_HIGHLIGHT_TYPE,
+        cfiRange,
+        {},
+        undefined,
+        TRANSLATION_HIGHLIGHT_CLASS_NAME,
+        TRANSLATION_HIGHLIGHT_STYLES[themeRef.current],
+      );
+
+      appliedHighlightCfisRef.current.add(cfiRange);
+      logBookTranslationEvent("HIGHLIGHT_APPLIED");
+    } catch {
+      // A CFI that no longer resolves must never break reading. Drop the annotation
+      // so epub.js does not retry it on every re-render of the chapter.
+      try {
+        annotations.remove(cfiRange, TRANSLATION_HIGHLIGHT_TYPE);
+      } catch {
+        // Nothing else to clean up.
+      }
+    }
+  }, []);
+
+  const loadChapterTranslations = useCallback(
+    async (chapterHref: string) => {
+      if (
+        loadedChapterHrefsRef.current.has(chapterHref) ||
+        loadingChapterHrefsRef.current.has(chapterHref)
+      ) {
+        return;
+      }
+
+      const runtimeId = readerRuntimeIdRef.current;
+      loadingChapterHrefsRef.current.add(chapterHref);
+
+      try {
+        const result = await fetchChapterBookTranslations({ bookId, chapterHref });
+
+        if (!result || runtimeId !== readerRuntimeIdRef.current) {
+          return;
+        }
+
+        loadedChapterHrefsRef.current.add(chapterHref);
+
+        for (const savedTranslationId of result.savedVocabularyTranslationIds) {
+          savedVocabularyTranslationIdsRef.current.add(savedTranslationId);
+        }
+
+        for (const translation of result.translations) {
+          cacheTranslation(translation);
+          applyTranslationHighlight(translation.cfiRange);
+        }
+      } finally {
+        loadingChapterHrefsRef.current.delete(chapterHref);
+      }
+    },
+    [applyTranslationHighlight, bookId, cacheTranslation],
+  );
+
+  const openPanelForTranslation = useCallback(
+    (translation: BookTranslation, contents: EpubContents | null) => {
+      const range = getContentsRange(contents, translation.cfiRange);
+
+      panelSourceRef.current = "highlight";
+      selectedContentsRef.current = contents;
+      setSelectionAnchor(range && contents ? getRangeAnchor(range, contents) : null);
+      setSelectedText(translation.selectedText);
+      setContextSentence(translation.contextSentence);
+      setSelectionCfiRange(translation.cfiRange);
+      setSelectionChapterHref(translation.chapterHref);
+      setActiveTranslation(translation);
+      setIsActiveTranslationSaved(
+        isPersistedTranslationId(translation.id) &&
+          savedVocabularyTranslationIdsRef.current.has(translation.id),
+      );
+    },
+    [],
+  );
+
+  const handleStoredTranslationFound = useCallback(
+    (translation: BookTranslation) => {
+      cacheTranslation(translation);
+      applyTranslationHighlight(translation.cfiRange);
+
+      // The lookup is async: ignore it if the reader already moved to another range.
+      if (selectionCfiRangeRef.current !== translation.cfiRange) {
+        return;
+      }
+
+      setActiveTranslation(translation);
+      setIsActiveTranslationSaved(
+        isPersistedTranslationId(translation.id) &&
+          savedVocabularyTranslationIdsRef.current.has(translation.id),
+      );
+    },
+    [applyTranslationHighlight, cacheTranslation],
+  );
+
+  const handleTranslationReady = useCallback(
+    (cfiRange: string) => {
+      applyTranslationHighlight(cfiRange);
+    },
+    [applyTranslationHighlight],
+  );
+
+  const persistTranslation = useCallback(
+    async (input: CreateBookTranslationRequest) => {
+      const result = await persistBookTranslation(input);
+
+      if (!result) {
+        logBookTranslationEvent("SAVE_FAILED", { cfiLength: input.cfiRange.length });
+
+        // The AI answer is valid, so it stays visible and highlighted for this session.
+        // It is not persisted, so it will not come back after reopening the book.
+        cacheTranslation(buildLocalBookTranslation(input));
+        return null;
+      }
+
+      logBookTranslationEvent("SAVED", { status: result.status });
+      cacheTranslation(result.translation);
+      applyTranslationHighlight(result.translation.cfiRange);
+
+      return result.translation;
+    },
+    [applyTranslationHighlight, cacheTranslation],
+  );
+
+  const markTranslationSaved = useCallback((bookTranslationId: string) => {
+    savedVocabularyTranslationIdsRef.current.add(bookTranslationId);
+    setIsActiveTranslationSaved(true);
   }, []);
 
   const toggleReaderUi = useCallback(() => {
@@ -1438,8 +1776,11 @@ export function EpubReader({
     let selectionHandler: RenditionEventHandler | null = null;
     let relocatedHandler: RenditionEventHandler | null = null;
     let clickHandler: RenditionEventHandler | null = null;
+    let markClickedHandler: RenditionEventHandler | null = null;
+    let lastMarkClickedAt = 0;
     let isDesktopSelectionPointerDown = false;
     let pendingDesktopSelectionContents: EpubContents | null = null;
+    let pendingDesktopSelectionCfiRange: string | null = null;
     let loadTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
     const selectionReleaseCleanupCallbacks: Array<() => void> = [];
     const selectionTrackedDocuments = new WeakSet<Document>();
@@ -1453,6 +1794,7 @@ export function EpubReader({
 
     const clearPendingSelectionRelease = () => {
       pendingDesktopSelectionContents = null;
+      pendingDesktopSelectionCfiRange = null;
       isDesktopSelectionPointerDown = false;
 
       for (const cleanup of selectionReleaseCleanupCallbacks) {
@@ -1489,10 +1831,15 @@ export function EpubReader({
 
       resizeObserver?.disconnect();
       clearPendingDesktopClickToggle();
+      clearPendingMobileUiToggle();
       clearPendingSelectionRelease();
 
       if (selectionHandler && renditionRef.current) {
         getRenditionEvents(renditionRef.current).off("selected", selectionHandler);
+      }
+
+      if (markClickedHandler && renditionRef.current) {
+        getRenditionEvents(renditionRef.current).off("markClicked", markClickedHandler);
       }
 
       if (relocatedHandler && renditionRef.current) {
@@ -1524,6 +1871,10 @@ export function EpubReader({
       setSelectedText("");
       setContextSentence(null);
       setSelectionAnchor(null);
+      setSelectionCfiRange(null);
+      setSelectionChapterHref(null);
+      setActiveTranslation(null);
+      setIsActiveTranslationSaved(false);
       setProgressPercentage(null);
       setIsSettingsOpen(false);
       setIsChromeVisible(false);
@@ -1532,7 +1883,10 @@ export function EpubReader({
       setReaderError(message);
     };
 
-    const commitSelectionFromContents = (contents: EpubContents) => {
+    const commitSelectionFromContents = (
+      contents: EpubContents,
+      fallbackCfiRange: string | null = null,
+    ) => {
       const selection = contents.window.getSelection();
 
       if (!selection || selection.rangeCount === 0) {
@@ -1545,22 +1899,47 @@ export function EpubReader({
         return;
       }
 
+      // Computed from the live range so it always covers the whole final selection,
+      // not just the range epub.js reported while the pointer was still down.
+      const cfiRange = getCfiRangeFromSelection(selection, contents) ?? fallbackCfiRange;
+      const storedTranslation = getCachedTranslation(cfiRange);
+
       clearPendingDesktopClickToggle();
+      clearPendingMobileUiToggle();
+      panelSourceRef.current = "selection";
       selectedContentsRef.current = contents;
       setSelectionAnchor(getSelectionAnchor(selection, contents));
       setSelectedText(extractedContext.selectedText);
       setContextSentence(extractedContext.contextSentence);
+      setSelectionCfiRange(cfiRange);
+      setSelectionChapterHref(
+        getChapterHrefForCfi(bookRef.current, cfiRange) ?? latestChapterHrefRef.current,
+      );
+      setActiveTranslation(storedTranslation);
+      setIsActiveTranslationSaved(
+        Boolean(
+          storedTranslation &&
+            isPersistedTranslationId(storedTranslation.id) &&
+            savedVocabularyTranslationIdsRef.current.has(storedTranslation.id),
+        ),
+      );
+
+      if (storedTranslation) {
+        logBookTranslationEvent("FOUND");
+      }
     };
 
     const flushPendingDesktopSelection = () => {
       const pendingContents = pendingDesktopSelectionContents;
+      const pendingCfiRange = pendingDesktopSelectionCfiRange;
 
       if (!pendingContents) {
         return;
       }
 
       pendingDesktopSelectionContents = null;
-      commitSelectionFromContents(pendingContents);
+      pendingDesktopSelectionCfiRange = null;
+      commitSelectionFromContents(pendingContents, pendingCfiRange);
     };
 
     const registerSelectionReleaseTracking = (contents: EpubContents) => {
@@ -1602,6 +1981,12 @@ export function EpubReader({
           return;
         }
 
+        // This only mirrors native selections. A panel opened from a highlight has no
+        // selection to lose, so a selectionchange caused by the tap must not close it.
+        if (panelSourceRef.current === "highlight") {
+          return;
+        }
+
         const currentSelection = contents.window.getSelection();
         const hasSelection = Boolean(currentSelection && currentSelection.toString().trim());
 
@@ -1639,7 +2024,19 @@ export function EpubReader({
     isRenditionReadyRef.current = false;
     locationsReadyRef.current = false;
     selectedContentsRef.current = null;
+    readerRuntimeIdRef.current += 1;
+    translationsByCfiRef.current = new Map();
+    savedVocabularyTranslationIdsRef.current = new Set();
+    appliedHighlightCfisRef.current = new Set();
+    loadedChapterHrefsRef.current = new Set();
+    loadingChapterHrefsRef.current = new Set();
+    panelSourceRef.current = null;
+    setSelectionCfiRange(null);
+    setSelectionChapterHref(null);
+    setActiveTranslation(null);
+    setIsActiveTranslationSaved(false);
     clearPendingDesktopClickToggle();
+    clearPendingMobileUiToggle();
     clearPendingSelectionRelease();
     lastSavedLocationRef.current = initialLocation ?? null;
     lastSavedProgressRef.current = normalizeProgressPercentageValue(initialProgressPercentage);
@@ -1697,6 +2094,35 @@ export function EpubReader({
 
           return nextProgressPercentage;
         });
+      }
+    };
+
+    /**
+     * Loads the translations of the chapters currently on screen. In a two-page
+     * spread the visible start and end can belong to different chapters, and each
+     * chapter is fetched at most once per reader session.
+     */
+    const ensureVisibleChapterTranslationsLoaded = (payload: RelocatedPayload) => {
+      const visibleChapterHrefs = new Set<string>();
+
+      for (const cfi of [getRelocatedStartCfi(payload), getRelocatedEndCfi(payload)]) {
+        const chapterHref = getChapterHrefForCfi(bookRef.current, cfi);
+
+        if (chapterHref) {
+          visibleChapterHrefs.add(chapterHref);
+        }
+      }
+
+      if (visibleChapterHrefs.size === 0) {
+        const fallbackChapterHref = getRelocatedChapterHref(payload);
+
+        if (fallbackChapterHref) {
+          visibleChapterHrefs.add(fallbackChapterHref);
+        }
+      }
+
+      for (const chapterHref of visibleChapterHrefs) {
+        void loadChapterTranslations(chapterHref);
       }
     };
 
@@ -1977,25 +2403,60 @@ export function EpubReader({
             }
 
             const contents = possibleContents as EpubContents;
+            const eventCfiRange = normalizeCfi(args[0]);
             registerSelectionReleaseTracking(contents);
 
             const shouldWaitForRelease =
               !isMobileViewportRef.current && !isTouchLikeDeviceRef.current;
 
             if (!shouldWaitForRelease) {
-              commitSelectionFromContents(contents);
+              commitSelectionFromContents(contents, eventCfiRange);
               return;
             }
 
             if (isDesktopSelectionPointerDown) {
               pendingDesktopSelectionContents = contents;
+              pendingDesktopSelectionCfiRange = eventCfiRange;
               return;
             }
 
-            commitSelectionFromContents(contents);
+            commitSelectionFromContents(contents, eventCfiRange);
           } catch {
             // Ignore selection extraction errors and keep reader responsive.
           }
+        };
+
+        markClickedHandler = (...args: unknown[]) => {
+          if (isCancelled) {
+            return;
+          }
+
+          const cfiRange = normalizeCfi(args[0]);
+
+          if (!cfiRange) {
+            return;
+          }
+
+          const translation = getCachedTranslation(cfiRange);
+
+          if (!translation) {
+            return;
+          }
+
+          // epub.js emits "click" before "markClicked", so cancel the pending
+          // reader-chrome toggle instead of letting a highlight tap trigger it.
+          clearPendingDesktopClickToggle();
+          clearPendingMobileUiToggle();
+
+          const possibleContents = args[2];
+          const contents =
+            possibleContents && typeof possibleContents === "object"
+              ? (possibleContents as EpubContents)
+              : selectedContentsRef.current;
+
+          lastMarkClickedAt = Date.now();
+          logBookTranslationEvent("FOUND");
+          openPanelForTranslation(translation, contents);
         };
 
         relocatedHandler = (...args: unknown[]) => {
@@ -2017,6 +2478,13 @@ export function EpubReader({
             fallbackProgressPercentage ?? latestProgressPercentageRef.current,
             relocatedPayload,
           );
+
+          ensureVisibleChapterTranslationsLoaded(relocatedPayload);
+
+          // A panel opened from a highlight has no selection to hold it in place.
+          if (panelSourceRef.current === "highlight") {
+            clearSelection();
+          }
 
           if (
             isRestoringInitialLocationRef.current &&
@@ -2140,16 +2608,37 @@ export function EpubReader({
             return;
           }
 
+          const shouldPreserveCurrentBehavior =
+            isMobileViewportRef.current || isTouchLikeDeviceRef.current;
+
+          // Touch only: this click belongs to the tap that just opened a highlight panel.
+          if (
+            shouldPreserveCurrentBehavior &&
+            panelSourceRef.current === "highlight" &&
+            Date.now() - lastMarkClickedAt < TOUCH_MARK_CLICK_FOLLOW_UP_MS
+          ) {
+            return;
+          }
+
           if (selectedTextRef.current) {
             clearPanelFromOutsideInteraction();
             return;
           }
 
-          const shouldPreserveCurrentBehavior =
-            isMobileViewportRef.current || isTouchLikeDeviceRef.current;
-
           if (shouldPreserveCurrentBehavior) {
-            toggleReaderUi();
+            // Deferred by one task so a highlight that reports "markClicked" after the
+            // click (mouse input on a touch-capable device) opens the panel instead of
+            // toggling the chrome.
+            clearPendingMobileUiToggle();
+            pendingMobileUiToggleTimerRef.current = setTimeout(() => {
+              pendingMobileUiToggleTimerRef.current = null;
+
+              if (isCancelled) {
+                return;
+              }
+
+              toggleReaderUi();
+            }, 0);
             return;
           }
 
@@ -2195,6 +2684,7 @@ export function EpubReader({
         renditionEvents.on("selected", selectionHandler);
         renditionEvents.on("relocated", relocatedHandler);
         renditionEvents.on("click", clickHandler);
+        renditionEvents.on("markClicked", markClickedHandler);
 
         const prepareLocationsInBackground = async () => {
           try {
@@ -2449,13 +2939,18 @@ export function EpubReader({
     bookId,
     clearPendingNavigationReason,
     clearPendingDesktopClickToggle,
+    clearPendingMobileUiToggle,
     clearReaderSettingsGuardTimer,
     clearRestoreGuardTimer,
+    clearSelection,
     clearStableReadingDebounce,
     fileUrl,
+    getCachedTranslation,
     initialLocation,
     initialProgressPercentage,
     hasActiveTextSelection,
+    loadChapterTranslations,
+    openPanelForTranslation,
     releaseSelectionScrollLock,
     scheduleRestoreGuardRelease,
     syncSelectionScrollLock,
@@ -2588,6 +3083,14 @@ export function EpubReader({
               sourceLanguage={sourceLanguage}
               targetLanguage={targetLanguage}
               variant={panelLayout.variant}
+              cfiRange={selectionCfiRange}
+              chapterHref={selectionChapterHref}
+              storedTranslation={activeTranslation}
+              isVocabularyAlreadySaved={isActiveTranslationSaved}
+              onStoredTranslationFound={handleStoredTranslationFound}
+              onTranslationReady={handleTranslationReady}
+              onPersistTranslation={persistTranslation}
+              onVocabularySaved={markTranslationSaved}
             />
           </div>
         )}

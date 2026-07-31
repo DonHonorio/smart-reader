@@ -2,8 +2,20 @@
 
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/Button";
+import {
+  confidenceScoreToLabel,
+  fetchBookTranslationByCfi,
+  isPersistedTranslationId,
+  logBookTranslationEvent,
+} from "@/lib/bookTranslations";
 import { cn } from "@/lib/utils";
-import type { SaveVocabularyRequest, SaveVocabularyResponse } from "@/types";
+import type {
+  BookTranslation,
+  CreateBookTranslationRequest,
+  SaveVocabularyRequest,
+  SaveVocabularyResponse,
+  SelectionPanelState,
+} from "@/types";
 
 const MAX_SELECTED_TEXT_LENGTH = 300;
 const SELECTED_TEXT_TOO_LONG_ERROR =
@@ -41,6 +53,18 @@ type SelectionPanelProps = {
   sourceLanguage: string;
   targetLanguage: string;
   variant?: "desktop" | "mobile";
+  /** EPUB position of the current selection or highlighted range. */
+  cfiRange?: string | null;
+  chapterHref?: string | null;
+  /** Already persisted translation for this position, when the reader knows it. */
+  storedTranslation?: BookTranslation | null;
+  isVocabularyAlreadySaved?: boolean;
+  onStoredTranslationFound?: (translation: BookTranslation) => void;
+  onTranslationReady?: (cfiRange: string) => void;
+  onPersistTranslation?: (
+    input: CreateBookTranslationRequest,
+  ) => Promise<BookTranslation | null>;
+  onVocabularySaved?: (bookTranslationId: string) => void;
 };
 
 type NormalizedTranslation = {
@@ -96,6 +120,22 @@ function normalizeTranslatePayload(payload: Record<string, unknown>): Normalized
   };
 }
 
+function toNormalizedTranslation(stored: BookTranslation): NormalizedTranslation {
+  const normalizedSelectedText = normalizeText(stored.selectedText);
+  const surfaceUnit = normalizeText(stored.detectedExpression ?? "") || normalizedSelectedText;
+  const canonicalUnit = normalizeText(stored.baseForm ?? "") || surfaceUnit;
+
+  return {
+    selectedText: normalizedSelectedText,
+    surfaceUnit,
+    canonicalUnit,
+    translation: normalizeText(stored.translation),
+    isExpanded: surfaceUnit.toLowerCase() !== normalizedSelectedText.toLowerCase(),
+    unitType: normalizeText(stored.unitType ?? "") || "phrase",
+    confidence: confidenceScoreToLabel(stored.confidence),
+  };
+}
+
 export function SelectionPanel({
   bookId,
   selectedText,
@@ -103,6 +143,14 @@ export function SelectionPanel({
   sourceLanguage,
   targetLanguage,
   variant = "desktop",
+  cfiRange = null,
+  chapterHref = null,
+  storedTranslation = null,
+  isVocabularyAlreadySaved = false,
+  onStoredTranslationFound,
+  onTranslationReady,
+  onPersistTranslation,
+  onVocabularySaved,
 }: SelectionPanelProps) {
   const [isTranslating, setIsTranslating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -119,23 +167,34 @@ export function SelectionPanel({
     status: "created" | "already_exists" | "error";
     message: string;
   } | null>(null);
+  const [persistedTranslationState, setPersistedTranslationState] = useState<{
+    key: string;
+    id: string;
+  } | null>(null);
 
   const selectionKey = useMemo(
-    () => `${sourceLanguage}|${targetLanguage}|${selectedText}|${contextSentence ?? ""}`,
-    [sourceLanguage, targetLanguage, selectedText, contextSentence],
+    () =>
+      `${sourceLanguage}|${targetLanguage}|${cfiRange ?? ""}|${selectedText}|${contextSentence ?? ""}`,
+    [sourceLanguage, targetLanguage, cfiRange, selectedText, contextSentence],
   );
 
-  const translation = translationState?.key === selectionKey ? translationState.value : null;
+  const storedNormalizedTranslation = useMemo(
+    () => (storedTranslation ? toNormalizedTranslation(storedTranslation) : null),
+    [storedTranslation],
+  );
+
+  const aiTranslation = translationState?.key === selectionKey ? translationState.value : null;
+  const translation = aiTranslation ?? storedNormalizedTranslation;
   const errorMessage = errorState?.key === selectionKey ? errorState.message : null;
   const hasSuccessfulTranslation = Boolean(translation) && !errorMessage;
   const currentSaveState = saveState?.key === selectionKey ? saveState : null;
-  const isSaved =
-    currentSaveState?.status === "created" ||
-    currentSaveState?.status === "already_exists";
+  const isSavedInThisPanel =
+    currentSaveState?.status === "created" || currentSaveState?.status === "already_exists";
+  const isSaved = isVocabularyAlreadySaved || isSavedInThisPanel;
   const saveErrorMessage = currentSaveState?.status === "error" ? currentSaveState.message : null;
-  const saveSuccessMessage = isSaved ? currentSaveState?.message ?? null : null;
+  const saveSuccessMessage = isSavedInThisPanel ? currentSaveState?.message ?? null : null;
   const saveButtonLabel =
-    currentSaveState?.status === "already_exists"
+    isVocabularyAlreadySaved || currentSaveState?.status === "already_exists"
       ? "Already saved"
       : currentSaveState?.status === "created"
         ? "Saved"
@@ -143,8 +202,53 @@ export function SelectionPanel({
           ? "Saving..."
           : "Save";
 
+  const panelState: SelectionPanelState | null = !translation
+    ? null
+    : isSaved
+      ? "saved_vocabulary"
+      : aiTranslation
+        ? "new_translation"
+        : "stored_translation";
+
+  const linkedBookTranslationId =
+    persistedTranslationState?.key === selectionKey
+      ? persistedTranslationState.id
+      : isPersistedTranslationId(storedTranslation?.id)
+        ? storedTranslation.id
+        : null;
+
+  function persistTranslationInBackground(value: NormalizedTranslation) {
+    if (!cfiRange || !onPersistTranslation) {
+      return;
+    }
+
+    const input: CreateBookTranslationRequest = {
+      bookId,
+      cfiRange,
+      chapterHref,
+      selectedText: value.selectedText,
+      contextSentence,
+      detectedExpression: value.surfaceUnit,
+      baseForm: value.canonicalUnit,
+      translation: value.translation,
+      unitType: value.unitType,
+      confidence: value.confidence,
+      sourceLanguage,
+      targetLanguage,
+    };
+
+    // Persistence never blocks the panel: a failure keeps the translation visible.
+    void onPersistTranslation(input).then((persisted) => {
+      if (!persisted || !isPersistedTranslationId(persisted.id)) {
+        return;
+      }
+
+      setPersistedTranslationState({ key: selectionKey, id: persisted.id });
+    });
+  }
+
   async function handleTranslate() {
-    if (!selectedText || isTranslating) {
+    if (!selectedText || isTranslating || translation) {
       return;
     }
 
@@ -160,6 +264,23 @@ export function SelectionPanel({
     setErrorState(null);
 
     try {
+      // Authoritative position lookup before spending an AI call.
+      if (cfiRange) {
+        const existingTranslation = await fetchBookTranslationByCfi({
+          bookId,
+          cfiRange,
+          targetLanguage,
+        });
+
+        if (existingTranslation) {
+          logBookTranslationEvent("FOUND");
+          onStoredTranslationFound?.(existingTranslation);
+          return;
+        }
+      }
+
+      logBookTranslationEvent("AI_REQUIRED");
+
       const response = await fetch("/api/translate", {
         method: "POST",
         headers: {
@@ -203,6 +324,13 @@ export function SelectionPanel({
         value: normalizedTranslation,
       });
       setSaveState(null);
+      setPersistedTranslationState(null);
+
+      if (cfiRange) {
+        // Optimistic highlight first, then persist without blocking the panel.
+        onTranslationReady?.(cfiRange);
+        persistTranslationInBackground(normalizedTranslation);
+      }
     } catch (error) {
       const message = normalizeTranslationErrorMessage(error);
 
@@ -241,6 +369,7 @@ export function SelectionPanel({
         contextSentence: normalizedContextSentence,
         unitType: translation.unitType,
         confidence: translation.confidence,
+        bookTranslationId: linkedBookTranslationId,
       };
 
       const response = await fetch("/api/vocabulary", {
@@ -274,6 +403,10 @@ export function SelectionPanel({
         status: data.status,
         message,
       });
+
+      if (linkedBookTranslationId) {
+        onVocabularySaved?.(linkedBookTranslationId);
+      }
     } catch (error) {
       const message =
         error instanceof Error && error.message ? error.message : "Could not save right now.";
@@ -292,6 +425,8 @@ export function SelectionPanel({
 
   return (
     <section
+      // Exposed for debugging/manual QA only; the panel design is unchanged.
+      data-panel-state={panelState ?? "empty"}
       className={cn(
         "w-full overflow-auto border shadow-xl",
         isMobileVariant

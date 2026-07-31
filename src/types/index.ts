@@ -254,7 +254,91 @@ export type VocabularyItem = {
   confidence: string | null;
   status: string;
   created_at: string;
+  // Optional because legacy rows and narrowed selects may not include it.
+  book_translation_id?: string | null;
 };
+
+/**
+ * A translation the reader produced inside a book, anchored to an EPUB CFI range.
+ * Persisted regardless of whether the user saved it to vocabulary.
+ */
+export type BookTranslation = {
+  id: string;
+  userId: string;
+  bookId: string;
+  cfiRange: string;
+  chapterHref: string | null;
+  selectedText: string;
+  contextSentence: string | null;
+  detectedExpression: string | null;
+  baseForm: string | null;
+  translation: string;
+  unitType: string | null;
+  confidence: number | null;
+  sourceLanguage: string;
+  targetLanguage: string;
+  provider: string | null;
+  requestedModel: string | null;
+  actualModel: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type BookTranslationRow = {
+  id: string;
+  user_id: string;
+  book_id: string;
+  cfi_range: string;
+  chapter_href: string | null;
+  selected_text: string;
+  context_sentence: string | null;
+  detected_expression: string | null;
+  base_form: string | null;
+  translation: string;
+  unit_type: string | null;
+  confidence: number | null;
+  source_language: string;
+  target_language: string;
+  provider: string | null;
+  requested_model: string | null;
+  actual_model: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreateBookTranslationRequest = {
+  bookId: string;
+  cfiRange: string;
+  chapterHref?: string | null;
+  selectedText: string;
+  contextSentence?: string | null;
+  detectedExpression?: string | null;
+  baseForm?: string | null;
+  translation: string;
+  unitType?: string | null;
+  /** Accepts the textual confidence used by the AI layer ("high" | "medium" | "low"). */
+  confidence?: string | null;
+  sourceLanguage: string;
+  targetLanguage: string;
+};
+
+export type CreateBookTranslationStatus = "created" | "already_exists";
+
+export type CreateBookTranslationResponse = {
+  translation: BookTranslation;
+  status: CreateBookTranslationStatus;
+};
+
+export type BookTranslationsResponse = {
+  translations: BookTranslation[];
+  savedVocabularyTranslationIds: string[];
+};
+
+/** Panel lifecycle for a selected or highlighted range. */
+export type SelectionPanelState =
+  | "new_translation"
+  | "stored_translation"
+  | "saved_vocabulary";
 
 export type GetUserVocabularyItemsParams = {
   search?: string;
@@ -278,6 +362,7 @@ export type SaveVocabularyRequest = {
   contextSentence: string;
   unitType: string;
   confidence: string;
+  bookTranslationId?: string | null;
 };
 
 export type SaveVocabularyStatus = "created" | "already_exists";
