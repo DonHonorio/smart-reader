@@ -8,6 +8,14 @@ import { ReaderSettingsPanel } from "@/components/reader/ReaderSettingsPanel";
 import { ReaderTopBar } from "@/components/reader/ReaderTopBar";
 import { SelectionPanel } from "@/components/reader/SelectionPanel";
 import {
+  downloadEpubFromSignedUrl,
+  getBookAccessErrorMessage,
+  isAbortError,
+  isRetryableBookAccessErrorCode,
+  logBookAccessEvent,
+  requestBookAccess,
+} from "@/lib/bookAccess";
+import {
   buildLocalBookTranslation,
   buildTranslationCacheKey,
   fetchChapterBookTranslations,
@@ -16,13 +24,16 @@ import {
   persistBookTranslation,
 } from "@/lib/bookTranslations";
 import { ROUTES } from "@/lib/constants";
+import { validateEpubArrayBuffer } from "@/lib/epubValidation";
 import { extractContextSentenceFromSelection } from "@/lib/text";
 import { cn } from "@/lib/utils";
 import type {
+  BookAccessErrorCode,
   BookTranslation,
   CreateBookTranslationRequest,
   EpubReaderProps,
   ReadingProgressSaveReason,
+  ReaderLoadPhase,
   ReaderPreferences,
   ReaderTheme,
   UpsertReadingProgressRequest,
@@ -35,9 +46,11 @@ const LOCATIONS_CACHE_KEY_PREFIX = "smart-reader:locations:";
 const INITIAL_RESTORE_SETTLE_MS = 500;
 const READER_SETTINGS_SETTLE_MS = 700;
 const PENDING_NAVIGATION_REASON_TIMEOUT_MS = 2000;
+// Budget for a single access attempt (signed URL + download + open). The retry
+// gets its own budget so one slow attempt cannot consume the whole allowance.
 const READER_LOAD_TIMEOUT_MS = 10_000;
-const INVALID_EPUB_OPEN_ERROR =
-  "The EPUB file could not be opened. Please upload a valid .epub file.";
+// One automatic retry with a brand new signed URL, never more.
+const MAX_BOOK_ACCESS_ATTEMPTS = 2;
 
 const READER_PREFERENCES_STORAGE_KEY = "smart-reader:reader-preferences:v1";
 const DEFAULT_READER_THEME: ReaderTheme = "light";
@@ -591,18 +604,6 @@ function getCurrentRenditionCfi(rendition: Rendition | null) {
   return getRelocatedStartCfi(currentLocation) ?? getRelocatedEndCfi(currentLocation);
 }
 
-function getLoadErrorMessage(status: number) {
-  if (status === 400 || status === 401 || status === 403) {
-    return "This reading link expired. Please reopen the book from your library.";
-  }
-
-  if (status === 404) {
-    return INVALID_EPUB_OPEN_ERROR;
-  }
-
-  return "We could not open this book right now. Please try again.";
-}
-
 function getRangeAnchor(range: Range, contents: EpubContents) {
   let rangeRect = range.getBoundingClientRect();
 
@@ -1043,7 +1044,6 @@ function hasSelectedText(selection: Selection | null | undefined) {
 }
 
 export function EpubReader({
-  fileUrl,
   bookId,
   bookTitle,
   bookAuthor,
@@ -1095,9 +1095,12 @@ export function EpubReader({
   const pendingMobileUiToggleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Invalidates in-flight chapter loads when the reader runtime is torn down.
   const readerRuntimeIdRef = useRef(0);
+  // Incremental id of the current load attempt: a response from an older attempt
+  // must never overwrite the state of the newest one.
+  const loadAttemptIdRef = useRef(0);
 
-  const [isLoading, setIsLoading] = useState(true);
-  const [isReady, setIsReady] = useState(false);
+  const [loadPhase, setLoadPhase] = useState<ReaderLoadPhase>("idle");
+  const [reloadToken, setReloadToken] = useState(0);
   const [readerError, setReaderError] = useState<string | null>(null);
   const [selectedText, setSelectedText] = useState("");
   const [contextSentence, setContextSentence] = useState<string | null>(null);
@@ -1131,6 +1134,9 @@ export function EpubReader({
 
   const themePalette = useMemo(() => READER_THEME_PALETTE[theme], [theme]);
   const isReaderUiVisible = isChromeVisible || isSettingsOpen;
+  const isReady = loadPhase === "ready";
+  // A retry keeps the loading screen: the final error is only shown once every attempt failed.
+  const isLoading = loadPhase !== "ready" && loadPhase !== "error";
 
   const clearStableReadingDebounce = useCallback(() => {
     if (stableReadingTimerRef.current) {
@@ -1640,8 +1646,9 @@ export function EpubReader({
   const retryReaderLoad = useCallback(() => {
     setReaderError(null);
     clearSelection();
-    router.refresh();
-  }, [clearSelection, router]);
+    // Re-runs the load effect, which always starts from a brand new signed URL.
+    setReloadToken((token) => token + 1);
+  }, [clearSelection]);
 
   const clearPanelFromOutsideInteraction = useCallback(() => {
     clearPendingDesktopClickToggle();
@@ -1792,6 +1799,16 @@ export function EpubReader({
 
     const renderContainer: HTMLDivElement = container;
 
+    loadAttemptIdRef.current += 1;
+    const loadAttemptId = loadAttemptIdRef.current;
+
+    /**
+     * True when this load was cancelled or superseded by a newer one. Guards every
+     * async continuation so a late response cannot resurrect an old error or reader.
+     */
+    const isStaleLoadAttempt = () =>
+      isCancelled || loadAttemptId !== loadAttemptIdRef.current;
+
     const clearPendingSelectionRelease = () => {
       pendingDesktopSelectionContents = null;
       pendingDesktopSelectionCfiRange = null;
@@ -1811,6 +1828,13 @@ export function EpubReader({
 
       clearTimeout(loadTimeoutTimer);
       loadTimeoutTimer = null;
+    };
+
+    const startLoadTimeout = () => {
+      clearLoadTimeout();
+      loadTimeoutTimer = setTimeout(() => {
+        failReaderLoad("EPUB_LOAD_TIMEOUT");
+      }, READER_LOAD_TIMEOUT_MS);
     };
 
     const teardownReaderRuntime = () => {
@@ -1857,8 +1881,8 @@ export function EpubReader({
       renderContainer.innerHTML = "";
     };
 
-    const failReaderLoad = (message: string) => {
-      if (isCancelled) {
+    const failReaderLoad = (code: BookAccessErrorCode) => {
+      if (isStaleLoadAttempt()) {
         return;
       }
 
@@ -1878,9 +1902,8 @@ export function EpubReader({
       setProgressPercentage(null);
       setIsSettingsOpen(false);
       setIsChromeVisible(false);
-      setIsLoading(false);
-      setIsReady(false);
-      setReaderError(message);
+      setLoadPhase("error");
+      setReaderError(getBookAccessErrorMessage(code));
     };
 
     const commitSelectionFromContents = (
@@ -2041,8 +2064,7 @@ export function EpubReader({
     lastSavedLocationRef.current = initialLocation ?? null;
     lastSavedProgressRef.current = normalizeProgressPercentageValue(initialProgressPercentage);
     hasUserNavigatedRef.current = false;
-    setIsLoading(true);
-    setIsReady(false);
+    setLoadPhase("requesting_access");
     setReaderError(null);
     setSelectedText("");
     setContextSentence(null);
@@ -2188,6 +2210,106 @@ export function EpubReader({
       }
     };
 
+    /**
+     * Downloads the EPUB bytes with a signed URL requested right now. A failure whose
+     * cause is compatible with an invalid or expired URL discards that URL completely
+     * and retries once with a brand new one. `code: null` means the attempt became
+     * stale and must end silently.
+     */
+    async function loadEpubData(): Promise<
+      { ok: true; data: ArrayBuffer } | { ok: false; code: BookAccessErrorCode | null }
+    > {
+      const staleResult = { ok: false, code: null } as const;
+      let lastErrorCode: BookAccessErrorCode = "UNKNOWN_ERROR";
+      let attemptsUsed = 0;
+
+      for (let attempt = 1; attempt <= MAX_BOOK_ACCESS_ATTEMPTS; attempt += 1) {
+        attemptsUsed = attempt;
+        const attemptStartedAt = Date.now();
+
+        if (attempt > 1) {
+          logBookAccessEvent("ACCESS_RETRY_STARTED", {
+            bookId,
+            attempt,
+            previousCode: lastErrorCode,
+          });
+          setLoadPhase("retrying_access");
+          // Each attempt gets its own budget so the retry is not born already expired.
+          startLoadTimeout();
+        }
+
+        logBookAccessEvent("REQUESTING_SIGNED_URL", { bookId, attempt });
+
+        const accessResult = await requestBookAccess({
+          bookId,
+          signal: abortController.signal,
+        });
+
+        if (isStaleLoadAttempt()) {
+          return staleResult;
+        }
+
+        if (!accessResult.ok) {
+          lastErrorCode = accessResult.code;
+
+          if (lastErrorCode === "STORAGE_FILE_NOT_FOUND") {
+            logBookAccessEvent("STORAGE_FILE_NOT_FOUND", { bookId, attempt });
+          }
+
+          if (attempt < MAX_BOOK_ACCESS_ATTEMPTS && isRetryableBookAccessErrorCode(lastErrorCode)) {
+            continue;
+          }
+
+          break;
+        }
+
+        logBookAccessEvent("SIGNED_URL_CREATED", {
+          bookId,
+          attempt,
+          expiresInSeconds: accessResult.grant.expiresInSeconds,
+        });
+
+        const downloadResult = await downloadEpubFromSignedUrl({
+          signedUrl: accessResult.grant.signedUrl,
+          signal: abortController.signal,
+        });
+
+        if (isStaleLoadAttempt()) {
+          return staleResult;
+        }
+
+        if (downloadResult.ok) {
+          if (attempt > 1) {
+            logBookAccessEvent("ACCESS_RETRY_SUCCEEDED", {
+              bookId,
+              attempt,
+              durationMs: Date.now() - attemptStartedAt,
+            });
+          }
+
+          return { ok: true, data: downloadResult.data };
+        }
+
+        lastErrorCode = downloadResult.code;
+
+        if (lastErrorCode === "STORAGE_FILE_NOT_FOUND") {
+          logBookAccessEvent("STORAGE_FILE_NOT_FOUND", { bookId, attempt });
+        }
+
+        if (attempt < MAX_BOOK_ACCESS_ATTEMPTS && isRetryableBookAccessErrorCode(lastErrorCode)) {
+          continue;
+        }
+
+        break;
+      }
+
+      if (attemptsUsed > 1) {
+        logBookAccessEvent("ACCESS_RETRY_FAILED", { bookId, code: lastErrorCode });
+      }
+
+      return { ok: false, code: lastErrorCode };
+    }
+
     async function mountReader() {
       try {
         let hasAttemptedInitialRestoreCorrection = false;
@@ -2196,27 +2318,62 @@ export function EpubReader({
           ? sanitizeCfiForDisplay(initialLocation)
           : null;
 
-        const response = await fetch(fileUrl, {
-          method: "GET",
-          signal: abortController.signal,
-        });
+        const epubDataResult = await loadEpubData();
 
-        if (!response.ok) {
-          failReaderLoad(getLoadErrorMessage(response.status));
+        if (isStaleLoadAttempt()) {
           return;
         }
 
-        const epubData = await response.arrayBuffer();
+        if (!epubDataResult.ok) {
+          if (epubDataResult.code) {
+            failReaderLoad(epubDataResult.code);
+          }
 
-        if (isCancelled) {
           return;
         }
 
-        const book = ePub(epubData);
+        const epubData = epubDataResult.data;
 
-        await book.ready;
+        setLoadPhase("loading_epub");
+        logBookAccessEvent("EPUB_LOAD_STARTED", { bookId });
 
-        if (isCancelled) {
+        // epub.js no rechaza `book.ready` ante un archivo corrupto: se queda colgado,
+        // asi que el contenedor se comprueba antes para poder clasificarlo de verdad.
+        const epubValidation = await validateEpubArrayBuffer(epubData);
+
+        if (isStaleLoadAttempt()) {
+          return;
+        }
+
+        if (!epubValidation.valid) {
+          logBookAccessEvent("EPUB_INVALID", { bookId });
+          failReaderLoad("EPUB_INVALID");
+          return;
+        }
+
+        let book: EpubBook;
+        // Only for cleanup: the instance must be released if it never became readable.
+        let pendingBook: EpubBook | null = null;
+
+        try {
+          // The bytes arrived over a valid signed URL, so a failure here is the file itself.
+          book = ePub(epubData);
+          pendingBook = book;
+          await book.ready;
+        } catch (error) {
+          pendingBook?.destroy();
+
+          if (isAbortError(error)) {
+            return;
+          }
+
+          logBookAccessEvent("EPUB_INVALID", { bookId });
+          failReaderLoad("EPUB_INVALID");
+          return;
+        }
+
+        if (isStaleLoadAttempt()) {
+          book.destroy();
           return;
         }
 
@@ -2903,30 +3060,29 @@ export function EpubReader({
 
         handleResize();
 
-        if (!isCancelled) {
+        if (!isStaleLoadAttempt()) {
           clearLoadTimeout();
-          setIsReady(true);
-          setIsLoading(false);
+          setLoadPhase("ready");
         }
       } catch (error) {
-        if (isCancelled) {
+        if (isStaleLoadAttempt()) {
           return;
         }
 
-        if (error instanceof DOMException && error.name === "AbortError") {
+        if (isAbortError(error)) {
           return;
         }
 
         const loadErrorMessage = error instanceof Error ? error.message : "Unknown error";
         console.error("EpubReader load error:", loadErrorMessage);
 
-        failReaderLoad(INVALID_EPUB_OPEN_ERROR);
+        // Reached only after the bytes were downloaded and epub.js took over.
+        logBookAccessEvent("EPUB_INVALID", { bookId });
+        failReaderLoad("EPUB_INVALID");
       }
     }
 
-    loadTimeoutTimer = setTimeout(() => {
-      failReaderLoad(INVALID_EPUB_OPEN_ERROR);
-    }, READER_LOAD_TIMEOUT_MS);
+    startLoadTimeout();
 
     void mountReader();
 
@@ -2944,7 +3100,6 @@ export function EpubReader({
     clearRestoreGuardTimer,
     clearSelection,
     clearStableReadingDebounce,
-    fileUrl,
     getCachedTranslation,
     initialLocation,
     initialProgressPercentage,
@@ -2952,6 +3107,7 @@ export function EpubReader({
     loadChapterTranslations,
     openPanelForTranslation,
     releaseSelectionScrollLock,
+    reloadToken,
     scheduleRestoreGuardRelease,
     syncSelectionScrollLock,
     clearPanelFromOutsideInteraction,

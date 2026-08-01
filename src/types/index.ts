@@ -131,7 +131,53 @@ export type CancelBookUploadResponse =
       error: string;
     };
 
+/**
+ * Every reason the reader can fail to open a book. Kept explicit so an expired
+ * signed URL is never reported to the user as a corrupt EPUB.
+ */
+export type BookAccessErrorCode =
+  | "UNAUTHENTICATED"
+  | "BOOK_NOT_FOUND"
+  | "BOOK_NOT_OWNED"
+  | "BOOK_NOT_READY"
+  | "FILE_PATH_MISSING"
+  | "SIGNED_URL_FAILED"
+  | "SIGNED_URL_EXPIRED_OR_FORBIDDEN"
+  | "STORAGE_FILE_NOT_FOUND"
+  | "NETWORK_ERROR"
+  | "EPUB_INVALID"
+  | "EPUB_LOAD_TIMEOUT"
+  | "UNKNOWN_ERROR";
+
+export type BookAccessGrant = {
+  bookId: string;
+  /** Temporary Supabase Storage URL. Never persisted anywhere. */
+  signedUrl: string;
+  expiresInSeconds: number;
+  expiresAt: string;
+};
+
+export type BookAccessErrorResponse = {
+  code: BookAccessErrorCode;
+  error: string;
+};
+
+export type BookAccessResponse = BookAccessGrant | BookAccessErrorResponse;
+
+export type BookAccessResult =
+  | { ok: true; grant: BookAccessGrant }
+  | { ok: false; code: BookAccessErrorCode };
+
 export type ReaderTheme = "light" | "dark" | "sepia";
+
+/** Load lifecycle of the reader. `error` is the only state that shows a final message. */
+export type ReaderLoadPhase =
+  | "idle"
+  | "requesting_access"
+  | "loading_epub"
+  | "retrying_access"
+  | "ready"
+  | "error";
 
 export type ReadingProgressSaveReason = "next" | "prev" | "stable_reading" | "manual";
 
@@ -141,7 +187,6 @@ export type ReaderPreferences = {
 };
 
 export type EpubReaderProps = {
-  fileUrl: string;
   bookId: string;
   bookTitle: string;
   bookAuthor: string;

@@ -3,7 +3,6 @@ import { buttonClassNames } from "@/components/ui/Button";
 import { EpubReader } from "@/components/reader/EpubReader";
 import { getUserBookById, getUserReadingProgressByBookId } from "@/lib/books";
 import { ROUTES } from "@/lib/constants";
-import { createClient } from "@/lib/supabase/server";
 
 type ReaderBookPageProps = {
   params: Promise<{
@@ -15,10 +14,9 @@ type ReaderFallbackProps = {
   title: string;
   description: string;
   actionLabel: string;
-  retryHref?: string;
 };
 
-function ReaderFallback({ title, description, actionLabel, retryHref }: ReaderFallbackProps) {
+function ReaderFallback({ title, description, actionLabel }: ReaderFallbackProps) {
   return (
     <section className="flex h-full min-h-0 w-full items-center justify-center bg-[#f6efe3] px-4">
       <div className="w-full max-w-sm rounded-2xl border border-slate-200/90 bg-white/90 p-5 shadow-sm backdrop-blur">
@@ -30,14 +28,6 @@ function ReaderFallback({ title, description, actionLabel, retryHref }: ReaderFa
         >
           {actionLabel}
         </Link>
-        {retryHref ? (
-          <Link
-            href={retryHref}
-            className={buttonClassNames({ variant: "ghost", className: "mt-2 w-full" })}
-          >
-            Try again
-          </Link>
-        ) : null}
       </div>
     </section>
   );
@@ -71,26 +61,12 @@ export default async function ReaderBookPage({ params }: ReaderBookPageProps) {
     );
   }
 
-  const supabase = await createClient();
-  const { data: signedData, error: signedUrlError } = await supabase.storage
-    .from("books")
-    .createSignedUrl(book.file_path, 60 * 60);
-
-  if (signedUrlError || !signedData?.signedUrl) {
-    return (
-      <ReaderFallback
-        title="We could not open this book."
-        description="This reading link expired. Please reopen the book from your library."
-        actionLabel="Back to Library"
-        retryHref={ROUTES.reader(book.id)}
-      />
-    );
-  }
-
+  // The signed URL is intentionally not created here: it is temporary and this
+  // payload can be replayed from the client router cache long after it expired.
+  // The reader requests a fresh one from /api/books/access on every load.
   return (
     <section className="h-full min-h-0 w-full overflow-hidden bg-[#f6efe3]">
       <EpubReader
-        fileUrl={signedData.signedUrl}
         bookId={book.id}
         bookTitle={book.title}
         bookAuthor={author}

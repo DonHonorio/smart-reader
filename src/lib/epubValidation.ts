@@ -43,6 +43,17 @@ export async function validateEpubFile(file: File): Promise<{ valid: boolean; er
     };
   }
 
+  return validateEpubArrayBuffer(fileBuffer);
+}
+
+/**
+ * Comprobacion de contenedor EPUB sobre los bytes ya leidos. El lector la usa antes de
+ * entregarlos a epub.js, porque ante un archivo corrupto epub.js no rechaza `book.ready`:
+ * se queda colgado y el fallo acabaria reportandose como timeout.
+ */
+export async function validateEpubArrayBuffer(
+  fileBuffer: ArrayBuffer,
+): Promise<{ valid: boolean; error?: string }> {
   let zip: JSZip;
 
   try {
