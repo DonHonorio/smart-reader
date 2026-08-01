@@ -25,6 +25,10 @@ import {
 } from "@/lib/bookTranslations";
 import { ROUTES } from "@/lib/constants";
 import { validateEpubArrayBuffer } from "@/lib/epubValidation";
+import {
+  createReaderPerformanceTracker,
+  type ReaderPerformanceTracker,
+} from "@/lib/readerPerformance";
 import { extractContextSentenceFromSelection } from "@/lib/text";
 import { cn } from "@/lib/utils";
 import type {
@@ -222,6 +226,18 @@ type SelectionAnchor = {
   centerX: number;
   top: number;
   bottom: number;
+};
+
+/**
+ * Runtime activo de epub.js. `key` identifica el recurso (libro + recarga manual) y
+ * `container` el nodo real: un doble montaje de React conserva el mismo nodo, mientras
+ * que un desmontaje real crea uno nuevo. Esa diferencia distingue reutilizar de reconstruir.
+ */
+type ReaderRuntimeHandle = {
+  key: string;
+  container: HTMLDivElement;
+  keepAlive: () => void;
+  scheduleTeardown: () => void;
 };
 
 function getLocationsCacheKey(bookId: string) {
@@ -1098,6 +1114,11 @@ export function EpubReader({
   // Incremental id of the current load attempt: a response from an older attempt
   // must never overwrite the state of the newest one.
   const loadAttemptIdRef = useRef(0);
+  // Runtime vivo de epub.js. Permite que un doble montaje de React reutilice la
+  // instancia en curso en lugar de descargar y construir el libro otra vez.
+  const activeReaderRuntimeRef = useRef<ReaderRuntimeHandle | null>(null);
+  const performanceTrackerRef = useRef<ReaderPerformanceTracker | null>(null);
+  const hasMarkedTranslationsReadyRef = useRef(false);
 
   const [loadPhase, setLoadPhase] = useState<ReaderLoadPhase>("idle");
   const [reloadToken, setReloadToken] = useState(0);
@@ -1518,6 +1539,13 @@ export function EpubReader({
 
         loadedChapterHrefsRef.current.add(chapterHref);
 
+        if (!hasMarkedTranslationsReadyRef.current) {
+          hasMarkedTranslationsReadyRef.current = true;
+          performanceTrackerRef.current?.mark("TRANSLATIONS_READY", {
+            translations: result.translations.length,
+          });
+        }
+
         for (const savedTranslationId of result.savedVocabularyTranslationIds) {
           savedVocabularyTranslationIdsRef.current.add(savedTranslationId);
         }
@@ -1789,6 +1817,8 @@ export function EpubReader({
     let pendingDesktopSelectionContents: EpubContents | null = null;
     let pendingDesktopSelectionCfiRange: string | null = null;
     let loadTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+    let afterPaintFrame: number | null = null;
+    let afterPaintTimer: ReturnType<typeof setTimeout> | null = null;
     const selectionReleaseCleanupCallbacks: Array<() => void> = [];
     const selectionTrackedDocuments = new WeakSet<Document>();
     const container = containerRef.current;
@@ -1798,9 +1828,25 @@ export function EpubReader({
     }
 
     const renderContainer: HTMLDivElement = container;
+    const runtimeKey = `${bookId}:${reloadToken}`;
+    const liveRuntime = activeReaderRuntimeRef.current;
+
+    // Doble ejecucion del efecto sobre el mismo libro y el mismo nodo (Strict Mode):
+    // se conserva el runtime en curso en lugar de pedir otra signed URL y reconstruir.
+    if (liveRuntime && liveRuntime.key === runtimeKey && liveRuntime.container === renderContainer) {
+      liveRuntime.keepAlive();
+
+      return () => {
+        liveRuntime.scheduleTeardown();
+      };
+    }
 
     loadAttemptIdRef.current += 1;
     const loadAttemptId = loadAttemptIdRef.current;
+    const performanceTracker = createReaderPerformanceTracker(bookId);
+    performanceTrackerRef.current = performanceTracker;
+    hasMarkedTranslationsReadyRef.current = false;
+    performanceTracker.mark("LOAD_STARTED");
 
     /**
      * True when this load was cancelled or superseded by a newer one. Guards every
@@ -1837,7 +1883,37 @@ export function EpubReader({
       }, READER_LOAD_TIMEOUT_MS);
     };
 
+    const clearAfterPaintWork = () => {
+      if (afterPaintFrame !== null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(afterPaintFrame);
+      }
+
+      afterPaintFrame = null;
+
+      if (afterPaintTimer) {
+        clearTimeout(afterPaintTimer);
+        afterPaintTimer = null;
+      }
+    };
+
+    /** Trabajo secundario: arranca cuando la primera pagina ya se ha pintado. */
+    const runAfterFirstPaint = (task: () => void) => {
+      if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+        afterPaintTimer = setTimeout(task, 0);
+        return;
+      }
+
+      afterPaintFrame = window.requestAnimationFrame(() => {
+        afterPaintFrame = null;
+        afterPaintTimer = setTimeout(() => {
+          afterPaintTimer = null;
+          task();
+        }, 0);
+      });
+    };
+
     const teardownReaderRuntime = () => {
+      clearAfterPaintWork();
       clearStableReadingDebounce();
       clearPendingNavigationReason();
       clearRestoreGuardTimer();
@@ -2269,6 +2345,9 @@ export function EpubReader({
           expiresInSeconds: accessResult.grant.expiresInSeconds,
         });
 
+        // Separa el coste del viaje a nuestra API del coste de descargar el EPUB.
+        performanceTracker.mark("ACCESS_GRANTED", { attempt });
+
         const downloadResult = await downloadEpubFromSignedUrl({
           signedUrl: accessResult.grant.signedUrl,
           signal: abortController.signal,
@@ -2336,6 +2415,7 @@ export function EpubReader({
 
         setLoadPhase("loading_epub");
         logBookAccessEvent("EPUB_LOAD_STARTED", { bookId });
+        performanceTracker.mark("ACCESS_READY", { bytes: epubData.byteLength });
 
         // epub.js no rechaza `book.ready` ante un archivo corrupto: se queda colgado,
         // asi que el contenedor se comprueba antes para poder clasificarlo de verdad.
@@ -2359,7 +2439,9 @@ export function EpubReader({
           // The bytes arrived over a valid signed URL, so a failure here is the file itself.
           book = ePub(epubData);
           pendingBook = book;
+          performanceTracker.mark("EPUB_INSTANCE_CREATED");
           await book.ready;
+          performanceTracker.mark("BOOK_READY");
         } catch (error) {
           pendingBook?.destroy();
 
@@ -2383,6 +2465,8 @@ export function EpubReader({
           flow: "paginated",
           spread: isMobileViewportRef.current ? "none" : "always",
         });
+
+        performanceTracker.mark("RENDITION_CREATED");
 
         registerReaderThemes(rendition);
         applyReaderAppearance(rendition, themeRef.current, fontSizeRef.current);
@@ -2857,6 +2941,8 @@ export function EpubReader({
               return;
             }
 
+            performanceTracker.mark("LOCATIONS_GENERATION_STARTED");
+
             let hasUsableLocations = false;
             const cachedLocations = readCachedLocations(bookId);
             const probeCfi = initialLocation ?? getCurrentRenditionCfi(renditionRef.current);
@@ -2895,6 +2981,9 @@ export function EpubReader({
             }
 
             locationsReadyRef.current = hasUsableLocations;
+            performanceTracker.mark("LOCATIONS_GENERATION_FINISHED", {
+              fromCache: hasUsableLocations && Boolean(cachedLocations),
+            });
 
             const maybeCorrectInitialRestoreFromProgress = async () => {
               if (hasAttemptedInitialRestoreCorrection || isCancelled || hasUserNavigatedRef.current) {
@@ -2996,8 +3085,6 @@ export function EpubReader({
           }
         };
 
-        void prepareLocationsInBackground();
-
         const handleResize = () => {
           if (!isRenditionReadyRef.current) {
             return;
@@ -3026,6 +3113,8 @@ export function EpubReader({
 
         resizeRendition = handleResize;
 
+        performanceTracker.mark("FIRST_DISPLAY_STARTED", { restoring: Boolean(initialLocation) });
+
         if (initialLocation) {
           beginInitialRestorePhase();
           try {
@@ -3043,6 +3132,8 @@ export function EpubReader({
           } finally {
             scheduleRestoreGuardRelease();
           }
+
+          performanceTracker.mark("PROGRESS_RESTORED");
         } else {
           await rendition.display();
         }
@@ -3063,7 +3154,18 @@ export function EpubReader({
         if (!isStaleLoadAttempt()) {
           clearLoadTimeout();
           setLoadPhase("ready");
+          performanceTracker.mark("FIRST_PAGE_VISIBLE");
         }
+
+        // Fuera del camino critico: generar locations es lo mas caro en libros grandes y
+        // no hace falta para pintar la pagina inicial ni para restaurar el CFI guardado.
+        runAfterFirstPaint(() => {
+          if (isStaleLoadAttempt()) {
+            return;
+          }
+
+          void prepareLocationsInBackground();
+        });
       } catch (error) {
         if (isStaleLoadAttempt()) {
           return;
@@ -3082,15 +3184,57 @@ export function EpubReader({
       }
     }
 
+    let teardownTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const runtimeHandle: ReaderRuntimeHandle = {
+      key: runtimeKey,
+      container: renderContainer,
+      keepAlive: () => {
+        // Solo puede ocurrir dentro del mismo commit de React, antes de que ninguna
+        // promesa en curso haya podido observar la cancelacion.
+        if (teardownTimer) {
+          clearTimeout(teardownTimer);
+          teardownTimer = null;
+        }
+
+        isCancelled = false;
+      },
+      scheduleTeardown: () => {
+        // La cancelacion es inmediata para que nada actualice estado ya desmontado,
+        // pero la destruccion se aplaza un tick por si React vuelve a montar el efecto.
+        isCancelled = true;
+
+        if (teardownTimer) {
+          return;
+        }
+
+        teardownTimer = setTimeout(() => {
+          teardownTimer = null;
+
+          if (activeReaderRuntimeRef.current === runtimeHandle) {
+            activeReaderRuntimeRef.current = null;
+          }
+
+          clearLoadTimeout();
+          teardownReaderRuntime();
+        }, 0);
+      },
+    };
+
+    activeReaderRuntimeRef.current = runtimeHandle;
+
     startLoadTimeout();
 
     void mountReader();
 
     return () => {
-      isCancelled = true;
-      clearLoadTimeout();
-      teardownReaderRuntime();
+      runtimeHandle.scheduleTeardown();
     };
+    // El libro solo se reconstruye cuando cambia el recurso (`bookId`) o se pide una
+    // recarga manual (`reloadToken`). `initialLocation` e `initialProgressPercentage`
+    // se leen del render vigente en ese momento: incluirlos reconstruiria el lector
+    // entero cada vez que el propio lector guarda progreso.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     bookId,
     clearPendingNavigationReason,
@@ -3101,8 +3245,6 @@ export function EpubReader({
     clearSelection,
     clearStableReadingDebounce,
     getCachedTranslation,
-    initialLocation,
-    initialProgressPercentage,
     hasActiveTextSelection,
     loadChapterTranslations,
     openPanelForTranslation,

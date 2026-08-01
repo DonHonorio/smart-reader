@@ -35,7 +35,13 @@ function ReaderFallback({ title, description, actionLabel }: ReaderFallbackProps
 
 export default async function ReaderBookPage({ params }: ReaderBookPageProps) {
   const { bookId } = await params;
-  const book = await getUserBookById(bookId);
+
+  // Consultas independientes: ambas estan acotadas al usuario autenticado por si mismas,
+  // asi que se piden a la vez en lugar de encadenar dos viajes a Supabase.
+  const [book, readingProgress] = await Promise.all([
+    getUserBookById(bookId),
+    getUserReadingProgressByBookId(bookId),
+  ]);
 
   if (!book) {
     return (
@@ -46,8 +52,6 @@ export default async function ReaderBookPage({ params }: ReaderBookPageProps) {
       />
     );
   }
-
-  const readingProgress = await getUserReadingProgressByBookId(book.id);
 
   const author = book.author?.trim() ? book.author : "Unknown author";
 

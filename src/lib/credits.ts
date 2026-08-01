@@ -1,4 +1,5 @@
 import { unstable_noStore as noStore } from "next/cache";
+import { getRequestUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { CreditTransaction } from "@/types";
@@ -109,14 +110,11 @@ async function ensureSignupBonusTransaction(supabase: ServerSupabaseClient, user
 export async function getUserCredits(): Promise<number | null> {
   noStore();
 
+  const { user, error: authError } = await getRequestUser();
   const supabase = await createClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
 
   if (authError) {
-    console.error("getUserCredits auth error:", authError.message);
+    console.error("getUserCredits auth error:", authError);
     return null;
   }
 
@@ -175,14 +173,11 @@ export async function ensureUserCredits(): Promise<number | null> {
 export async function getUserCreditTransactions(): Promise<CreditTransaction[]> {
   noStore();
 
+  const { user, error: authError } = await getRequestUser();
   const supabase = await createClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
 
   if (authError) {
-    console.error("getUserCreditTransactions auth error:", authError.message);
+    console.error("getUserCreditTransactions auth error:", authError);
     return [];
   }
 
@@ -466,14 +461,11 @@ export async function consumeBookCredit(bookId: string): Promise<ConsumeBookCred
     };
   }
 
+  const { user, error: authError } = await getRequestUser();
   const supabase = await createClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
 
   if (authError) {
-    console.error("consumeBookCredit auth error:", authError.message);
+    console.error("consumeBookCredit auth error:", authError);
     return {
       success: false,
       error: CREDIT_CONSUMPTION_ERROR,

@@ -1,3 +1,4 @@
+import { getRequestUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { unstable_noStore as noStore } from "next/cache";
 import type {
@@ -91,14 +92,11 @@ export function buildBookStoragePath(userId: string, bookId: string) {
 export async function getUserBooks(): Promise<Book[]> {
   noStore();
 
+  const { user, error: authError } = await getRequestUser();
   const supabase = await createClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
 
   if (authError) {
-    console.error("getUserBooks auth error:", authError.message);
+    console.error("getUserBooks auth error:", authError);
     return [];
   }
 
@@ -127,14 +125,11 @@ export async function getUserBooks(): Promise<Book[]> {
 export async function getUserBooksWithProgress(): Promise<BookWithProgress[]> {
   noStore();
 
+  const { user, error: authError } = await getRequestUser();
   const supabase = await createClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
 
   if (authError) {
-    console.error("getUserBooksWithProgress auth error:", authError.message);
+    console.error("getUserBooksWithProgress auth error:", authError);
     return [];
   }
 
@@ -255,14 +250,17 @@ export async function getUserBookById(bookId: string): Promise<Book | null> {
     return null;
   }
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
+  // La sesion y la lectura del libro se resuelven a la vez, cada una con su propio cliente:
+  // compartir cliente serializa ambas llamadas por el cerrojo del token de supabase-js.
+  // La consulta pasa por RLS y ademas se verifica la propiedad sobre la fila devuelta.
+  const readClient = await createClient();
+  const [{ user, error: authError }, { data, error }] = await Promise.all([
+    getRequestUser(),
+    readClient.from("books").select(BOOK_FIELDS).eq("id", bookId).maybeSingle(),
+  ]);
 
   if (authError) {
-    console.error("getUserBookById auth error:", authError.message);
+    console.error("getUserBookById auth error:", authError);
     return null;
   }
 
@@ -270,23 +268,18 @@ export async function getUserBookById(bookId: string): Promise<Book | null> {
     return null;
   }
 
-  const { data, error } = await supabase
-    .from("books")
-    .select(BOOK_FIELDS)
-    .eq("id", bookId)
-    .eq("user_id", user.id)
-    .maybeSingle();
-
   if (error) {
     console.error("getUserBookById query error:", error.message);
     return null;
   }
 
-  if (!data) {
+  const book = data as Book | null;
+
+  if (!book || book.user_id !== user.id) {
     return null;
   }
 
-  return data as Book;
+  return book;
 }
 
 export async function getUserReadingProgressByBookId(
@@ -298,14 +291,22 @@ export async function getUserReadingProgressByBookId(
     return DEFAULT_READING_PROGRESS;
   }
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
+  // Igual que en getUserBookById: cliente propio para que la consulta no espere al
+  // cerrojo del token. RLS acota la fila y ademas se verifica el propietario.
+  const readClient = await createClient();
+  const [{ user, error: authError }, { data, error }] = await Promise.all([
+    getRequestUser(),
+    readClient
+      .from("reading_progress")
+      .select(
+        "user_id, current_location, progress_percentage, chapter_href, save_reason, last_stable_at",
+      )
+      .eq("book_id", bookId)
+      .maybeSingle(),
+  ]);
 
   if (authError) {
-    console.error("getUserReadingProgressByBookId auth error:", authError.message);
+    console.error("getUserReadingProgressByBookId auth error:", authError);
     return DEFAULT_READING_PROGRESS;
   }
 
@@ -313,17 +314,12 @@ export async function getUserReadingProgressByBookId(
     return DEFAULT_READING_PROGRESS;
   }
 
-  const { data, error } = await supabase
-    .from("reading_progress")
-    .select(
-      "current_location, progress_percentage, chapter_href, save_reason, last_stable_at",
-    )
-    .eq("user_id", user.id)
-    .eq("book_id", bookId)
-    .maybeSingle();
-
   if (error) {
     console.error("getUserReadingProgressByBookId query error:", error.message);
+    return DEFAULT_READING_PROGRESS;
+  }
+
+  if (data && data.user_id !== user.id) {
     return DEFAULT_READING_PROGRESS;
   }
 

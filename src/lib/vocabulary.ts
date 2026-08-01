@@ -1,4 +1,5 @@
 import { unstable_noStore as noStore } from "next/cache";
+import { getRequestUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import type {
   GetUserVocabularyItemsParams,
@@ -71,14 +72,11 @@ export async function getUserVocabularyItems(
 ): Promise<VocabularyItem[]> {
   noStore();
 
+  const { user, error: authError } = await getRequestUser();
   const supabase = await createClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
 
   if (authError) {
-    console.error("getUserVocabularyItems auth error:", authError.message);
+    console.error("getUserVocabularyItems auth error:", authError);
     return [];
   }
 
@@ -126,14 +124,11 @@ export async function getUserVocabularyItems(
 export async function getUserVocabularyItemsForExport(): Promise<VocabularyItem[]> {
   noStore();
 
+  const { user, error: authError } = await getRequestUser();
   const supabase = await createClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
 
   if (authError) {
-    console.error("getUserVocabularyItemsForExport auth error:", authError.message);
+    console.error("getUserVocabularyItemsForExport auth error:", authError);
     return [];
   }
 

@@ -1,4 +1,5 @@
 import { unstable_noStore as noStore } from "next/cache";
+import { getRequestUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import type {
   DashboardData,
@@ -90,14 +91,11 @@ function mapLatestReadingProgress(
 export async function getDashboardData(): Promise<DashboardData | null> {
   noStore();
 
+  const { user, error: authError } = await getRequestUser();
   const supabase = await createClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
 
   if (authError) {
-    console.error("getDashboardData auth error:", authError.message);
+    console.error("getDashboardData auth error:", authError);
     return null;
   }
 

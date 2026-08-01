@@ -1,4 +1,5 @@
 import { unstable_noStore as noStore } from "next/cache";
+import { getRequestUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import type { UserOnboarding } from "@/types";
 
@@ -43,14 +44,11 @@ function normalizeOnboardingRow(row: Partial<UserOnboarding> | null | undefined)
 }
 
 async function getAuthenticatedUserId() {
+  const { user, error: authError } = await getRequestUser();
   const supabase = await createClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
 
   if (authError) {
-    console.error("onboarding auth error:", authError.message);
+    console.error("onboarding auth error:", authError);
     return { supabase, userId: null as string | null };
   }
 
