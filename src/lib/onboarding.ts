@@ -58,24 +58,34 @@ async function getAuthenticatedUserId() {
 export async function getUserOnboarding(): Promise<UserOnboarding | null> {
   noStore();
 
-  const { supabase, userId } = await getAuthenticatedUserId();
+  // Sesion y fila de onboarding en paralelo, con clientes distintos: compartir cliente
+  // serializa la consulta detras del cerrojo del token. RLS la acota al propietario y
+  // el `user_id` devuelto se verifica antes de usarla.
+  const readClient = await createClient();
+  const [{ supabase, userId }, { data: existingOnboarding, error: selectError }] =
+    await Promise.all([
+      getAuthenticatedUserId(),
+      readClient
+        .from("user_onboarding")
+        .select("user_id, status, current_step, completed_at, skipped_at, created_at, updated_at")
+        .maybeSingle(),
+    ]);
 
   if (!userId) {
     return null;
   }
-
-  const { data: existingOnboarding, error: selectError } = await supabase
-    .from("user_onboarding")
-    .select("user_id, status, current_step, completed_at, skipped_at, created_at, updated_at")
-    .eq("user_id", userId)
-    .maybeSingle();
 
   if (selectError) {
     console.error("getUserOnboarding select error:", selectError.message);
     return null;
   }
 
-  const normalizedExisting = normalizeOnboardingRow(existingOnboarding as Partial<UserOnboarding> | null);
+  const ownedOnboarding =
+    existingOnboarding && (existingOnboarding as Partial<UserOnboarding>).user_id === userId
+      ? existingOnboarding
+      : null;
+
+  const normalizedExisting = normalizeOnboardingRow(ownedOnboarding as Partial<UserOnboarding> | null);
 
   if (normalizedExisting) {
     return normalizedExisting;

@@ -110,8 +110,16 @@ async function ensureSignupBonusTransaction(supabase: ServerSupabaseClient, user
 export async function getUserCredits(): Promise<number | null> {
   noStore();
 
-  const { user, error: authError } = await getRequestUser();
-  const supabase = await createClient();
+  // La sesion y el saldo se piden a la vez, cada uno con su cliente: sobre un mismo
+  // cliente la consulta espera al cerrojo del token de supabase-js y ambas llamadas se
+  // suman (230 ms) en vez de solaparse (155 ms). RLS acota la fila al propietario y
+  // ademas se verifica explicitamente sobre la fila devuelta.
+  const readClient = await createClient();
+  const [{ user, error: authError }, { data: creditsRow, error: creditsError }] =
+    await Promise.all([
+      getRequestUser(),
+      readClient.from("user_credits").select("user_id, balance").maybeSingle(),
+    ]);
 
   if (authError) {
     console.error("getUserCredits auth error:", authError);
@@ -122,16 +130,17 @@ export async function getUserCredits(): Promise<number | null> {
     return null;
   }
 
-  const { data: creditsRow, error: creditsError } = await supabase
-    .from("user_credits")
-    .select("balance")
-    .eq("user_id", user.id)
-    .maybeSingle();
-
   if (creditsError) {
     console.error("getUserCredits query error:", creditsError.message);
     return null;
   }
+
+  if (creditsRow && creditsRow.user_id !== user.id) {
+    console.error("getUserCredits ownership mismatch");
+    return null;
+  }
+
+  const supabase = await createClient();
 
   if (creditsRow) {
     return normalizeBalance(creditsRow.balance);
