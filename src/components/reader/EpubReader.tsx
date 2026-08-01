@@ -29,6 +29,14 @@ import {
   createReaderPerformanceTracker,
   type ReaderPerformanceTracker,
 } from "@/lib/readerPerformance";
+import {
+  RECOVERY_CONFIRMATION_DELAY_MS,
+  RECOVERY_DUPLICATE_EVENT_WINDOW_MS,
+  evaluateReaderHealth,
+  isNetworkRecoverableErrorCode,
+  logReaderRecoveryEvent,
+  type ReaderRecoveryReason,
+} from "@/lib/readerRecovery";
 import { extractContextSentenceFromSelection } from "@/lib/text";
 import { cn } from "@/lib/utils";
 import type {
@@ -1119,6 +1127,17 @@ export function EpubReader({
   const activeReaderRuntimeRef = useRef<ReaderRuntimeHandle | null>(null);
   const performanceTrackerRef = useRef<ReaderPerformanceTracker | null>(null);
   const hasMarkedTranslationsReadyRef = useRef(false);
+  // Punto de restauracion para el proximo montaje cuando venimos de una recuperacion.
+  // Null en una entrada normal, donde manda lo que trajo el servidor.
+  const recoveryLocationRef = useRef<string | null>(null);
+  const recoveryProgressRef = useRef<number | null>(null);
+  const isRecoveringRef = useRef(false);
+  const recoveryIdRef = useRef(0);
+  const lastHealthCheckAtRef = useRef(0);
+  const pendingHealthCheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastLoadErrorCodeRef = useRef<BookAccessErrorCode | null>(null);
+  const loadPhaseRef = useRef<ReaderLoadPhase>("idle");
+  const isDeferredOfflineRecoveryPendingRef = useRef(false);
 
   const [loadPhase, setLoadPhase] = useState<ReaderLoadPhase>("idle");
   const [reloadToken, setReloadToken] = useState(0);
@@ -1683,6 +1702,189 @@ export function EpubReader({
     clearSelection();
   }, [clearPendingDesktopClickToggle, clearSelection]);
 
+  const clearPendingHealthCheck = useCallback(() => {
+    if (pendingHealthCheckTimerRef.current) {
+      clearTimeout(pendingHealthCheckTimerRef.current);
+      pendingHealthCheckTimerRef.current = null;
+    }
+  }, []);
+
+  /** Lectura de salud sin efectos secundarios: solo DOM y API publica de epub.js. */
+  const readReaderHealth = useCallback(
+    () =>
+      evaluateReaderHealth({
+        isReady: loadPhaseRef.current === "ready",
+        hasBook: Boolean(bookRef.current),
+        hasRendition: Boolean(renditionRef.current),
+        container: containerRef.current,
+      }),
+    [],
+  );
+
+  /**
+   * Reconstruye reutilizando el coordinador de la Fase 36.2: deja la ultima posicion
+   * estable en un ref y sube `reloadToken`. Eso cambia la clave del runtime, el
+   * coordinador destruye la instancia rota y crea una nueva, y por dentro sigue usando
+   * el acceso con reintento unico de la Fase 36.1. No hay un segundo flujo de carga.
+   */
+  const startReaderRecovery = useCallback(() => {
+    isRecoveringRef.current = true;
+    recoveryIdRef.current += 1;
+    recoveryLocationRef.current = latestRestoreLocationRef.current;
+    recoveryProgressRef.current = latestProgressPercentageRef.current;
+    setReaderError(null);
+    setReloadToken((token) => token + 1);
+  }, []);
+
+  /**
+   * Punto unico al que desembocan todas las señales del navegador. Decide entre
+   * conservar la instancia, aplazar por falta de red o reconstruir una sola vez.
+   */
+  const checkAndRecoverReader = useCallback(
+    (reason: ReaderRecoveryReason) => {
+      if (isRecoveringRef.current) {
+        logReaderRecoveryEvent("DUPLICATE_EVENT_IGNORED", { bookId, reason, state: "recovering" });
+        return;
+      }
+
+      const now = Date.now();
+
+      if (now - lastHealthCheckAtRef.current < RECOVERY_DUPLICATE_EVENT_WINDOW_MS) {
+        logReaderRecoveryEvent("DUPLICATE_EVENT_IGNORED", { bookId, reason, state: "debounced" });
+        return;
+      }
+
+      lastHealthCheckAtRef.current = now;
+      clearPendingHealthCheck();
+
+      const phase = loadPhaseRef.current;
+
+      // Un error que solo la red puede resolver espera al evento `online`.
+      if (phase === "error") {
+        const canRetryNow =
+          reason === "online" && isNetworkRecoverableErrorCode(lastLoadErrorCodeRef.current);
+
+        if (!canRetryNow) {
+          return;
+        }
+
+        logReaderRecoveryEvent("RECOVERY_REQUIRED", { bookId, reason, cause: "network_error" });
+        isDeferredOfflineRecoveryPendingRef.current = false;
+        startReaderRecovery();
+        return;
+      }
+
+      if (phase !== "ready") {
+        return;
+      }
+
+      logReaderRecoveryEvent("HEALTH_CHECK_STARTED", { bookId, reason });
+
+      const health = readReaderHealth();
+
+      if (health.status === "healthy") {
+        logReaderRecoveryEvent("HEALTHY", { bookId, reason, check: health.reason });
+        return;
+      }
+
+      // Segunda lectura antes de reconstruir: al volver, el navegador puede tardar un
+      // instante en rehidratar el iframe y no conviene tirar una instancia sana.
+      pendingHealthCheckTimerRef.current = setTimeout(() => {
+        pendingHealthCheckTimerRef.current = null;
+
+        if (isRecoveringRef.current || loadPhaseRef.current !== "ready") {
+          return;
+        }
+
+        const confirmation = readReaderHealth();
+
+        if (confirmation.status === "healthy") {
+          logReaderRecoveryEvent("HEALTHY", { bookId, reason, check: "recovered_on_confirmation" });
+          return;
+        }
+
+        if (typeof navigator !== "undefined" && navigator.onLine === false) {
+          isDeferredOfflineRecoveryPendingRef.current = true;
+          logReaderRecoveryEvent("OFFLINE_RECOVERY_DEFERRED", {
+            bookId,
+            reason,
+            check: confirmation.reason,
+          });
+          return;
+        }
+
+        logReaderRecoveryEvent("RECOVERY_REQUIRED", {
+          bookId,
+          reason,
+          check: confirmation.reason,
+        });
+        startReaderRecovery();
+      }, RECOVERY_CONFIRMATION_DELAY_MS);
+    },
+    [bookId, clearPendingHealthCheck, readReaderHealth, startReaderRecovery],
+  );
+
+  useEffect(() => {
+    loadPhaseRef.current = loadPhase;
+  }, [loadPhase]);
+
+  /**
+   * Señales del navegador para volver de segundo plano. Callbacks estables registrados
+   * una sola vez: todas desembocan en `checkAndRecoverReader`, que descarta las
+   * duplicadas, asi que un mismo regreso no dispara varias recuperaciones.
+   */
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") {
+      return;
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        // No se destruye nada ni se fuerza guardado: la pestaña puede volver intacta.
+        logReaderRecoveryEvent("BACKGROUND_ENTERED", { bookId });
+        return;
+      }
+
+      logReaderRecoveryEvent("FOREGROUND_ENTERED", { bookId, reason: "visibilitychange" });
+      checkAndRecoverReader("visibilitychange");
+    };
+
+    const handlePageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        logReaderRecoveryEvent("BFCACHE_RESTORED", { bookId });
+        checkAndRecoverReader("bfcache");
+        return;
+      }
+
+      checkAndRecoverReader("pageshow");
+    };
+
+    const handleFocus = () => {
+      checkAndRecoverReader("focus");
+    };
+
+    const handleOnline = () => {
+      if (!isDeferredOfflineRecoveryPendingRef.current && loadPhaseRef.current !== "error") {
+        return;
+      }
+
+      checkAndRecoverReader("online");
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("pageshow", handlePageShow);
+    window.addEventListener("focus", handleFocus);
+    window.addEventListener("online", handleOnline);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("pageshow", handlePageShow);
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("online", handleOnline);
+      clearPendingHealthCheck();
+    };
+  }, [bookId, checkAndRecoverReader, clearPendingHealthCheck]);
+
   const panelLayout = useMemo(() => {
     const visibleTopOffset = isReaderUiVisible ? 86 : PANEL_VIEWPORT_MARGIN;
 
@@ -1980,6 +2182,17 @@ export function EpubReader({
       setIsChromeVisible(false);
       setLoadPhase("error");
       setReaderError(getBookAccessErrorMessage(code));
+      lastLoadErrorCodeRef.current = code;
+
+      if (isRecoveryMount) {
+        logReaderRecoveryEvent("RECOVERY_FAILED", {
+          bookId,
+          recoveryId: recoveryIdRef.current,
+          code,
+        });
+      }
+
+      isRecoveringRef.current = false;
     };
 
     const commitSelectionFromContents = (
@@ -2119,6 +2332,26 @@ export function EpubReader({
       });
     };
 
+    // Punto de restauracion de este montaje. En una recuperacion desde segundo plano es
+    // la ultima posicion estable de la sesion; en una entrada normal, la del servidor.
+    // Se consume aqui para que un montaje posterior no lo herede.
+    const isRecoveryMount = recoveryLocationRef.current !== null;
+    const restoreFromLocation = recoveryLocationRef.current ?? initialLocation;
+    const restoreFromProgressPercentage = isRecoveryMount
+      ? recoveryProgressRef.current
+      : initialProgressPercentage;
+
+    recoveryLocationRef.current = null;
+    recoveryProgressRef.current = null;
+
+    if (isRecoveryMount) {
+      logReaderRecoveryEvent("RECOVERY_STARTED", {
+        bookId,
+        recoveryId: recoveryIdRef.current,
+        hasStableLocation: Boolean(restoreFromLocation),
+      });
+    }
+
     renderContainer.innerHTML = "";
     isRenditionReadyRef.current = false;
     locationsReadyRef.current = false;
@@ -2137,8 +2370,8 @@ export function EpubReader({
     clearPendingDesktopClickToggle();
     clearPendingMobileUiToggle();
     clearPendingSelectionRelease();
-    lastSavedLocationRef.current = initialLocation ?? null;
-    lastSavedProgressRef.current = normalizeProgressPercentageValue(initialProgressPercentage);
+    lastSavedLocationRef.current = restoreFromLocation ?? null;
+    lastSavedProgressRef.current = normalizeProgressPercentageValue(restoreFromProgressPercentage);
     hasUserNavigatedRef.current = false;
     setLoadPhase("requesting_access");
     setReaderError(null);
@@ -2148,7 +2381,7 @@ export function EpubReader({
     setProgressPercentage(null);
     setIsSettingsOpen(false);
     setIsChromeVisible(false);
-    latestRestoreLocationRef.current = initialLocation ?? null;
+    latestRestoreLocationRef.current = restoreFromLocation ?? null;
     latestProgressPercentageRef.current = null;
     latestChapterHrefRef.current = null;
     releaseSelectionScrollLock();
@@ -2393,8 +2626,8 @@ export function EpubReader({
       try {
         let hasAttemptedInitialRestoreCorrection = false;
         let hasAttemptedInitialLocationRecovery = false;
-        const sanitizedInitialLocation = initialLocation
-          ? sanitizeCfiForDisplay(initialLocation)
+        const sanitizedRestoreLocation = restoreFromLocation
+          ? sanitizeCfiForDisplay(restoreFromLocation)
           : null;
 
         const epubDataResult = await loadEpubData();
@@ -2731,28 +2964,28 @@ export function EpubReader({
             isRestoringInitialLocationRef.current &&
             !hasUserNavigatedRef.current &&
             !hasAttemptedInitialLocationRecovery &&
-            initialLocation
+            restoreFromLocation
           ) {
-            const restoreComparison = compareCfiPosition(currentLocationCfi, initialLocation);
+            const restoreComparison = compareCfiPosition(currentLocationCfi, restoreFromLocation);
 
             if (restoreComparison !== null && restoreComparison < 0) {
               const recoveryCandidates: Array<{
                 strategy: "initial" | "sanitized" | "nudged-initial" | "nudged-sanitized";
                 cfi: string | null;
               }> = [
-                { strategy: "initial", cfi: initialLocation },
+                { strategy: "initial", cfi: restoreFromLocation },
                 {
                   strategy: "sanitized",
                   cfi:
-                    sanitizedInitialLocation && sanitizedInitialLocation !== initialLocation
-                      ? sanitizedInitialLocation
+                    sanitizedRestoreLocation && sanitizedRestoreLocation !== restoreFromLocation
+                      ? sanitizedRestoreLocation
                       : null,
                 },
-                { strategy: "nudged-initial", cfi: nudgeCfiForward(initialLocation) },
+                { strategy: "nudged-initial", cfi: nudgeCfiForward(restoreFromLocation) },
                 {
                   strategy: "nudged-sanitized",
-                  cfi: sanitizedInitialLocation
-                    ? nudgeCfiForward(sanitizedInitialLocation)
+                  cfi: sanitizedRestoreLocation
+                    ? nudgeCfiForward(sanitizedRestoreLocation)
                     : null,
                 },
               ];
@@ -2945,7 +3178,7 @@ export function EpubReader({
 
             let hasUsableLocations = false;
             const cachedLocations = readCachedLocations(bookId);
-            const probeCfi = initialLocation ?? getCurrentRenditionCfi(renditionRef.current);
+            const probeCfi = restoreFromLocation ?? getCurrentRenditionCfi(renditionRef.current);
 
             if (cachedLocations && typeof locations.load === "function") {
               try {
@@ -2993,7 +3226,7 @@ export function EpubReader({
               hasAttemptedInitialRestoreCorrection = true;
 
               const normalizedInitialProgressPercentage = normalizeProgressPercentageValue(
-                initialProgressPercentage,
+                restoreFromProgressPercentage,
               );
 
               if (
@@ -3113,16 +3346,16 @@ export function EpubReader({
 
         resizeRendition = handleResize;
 
-        performanceTracker.mark("FIRST_DISPLAY_STARTED", { restoring: Boolean(initialLocation) });
+        performanceTracker.mark("FIRST_DISPLAY_STARTED", { restoring: Boolean(restoreFromLocation) });
 
-        if (initialLocation) {
+        if (restoreFromLocation) {
           beginInitialRestorePhase();
           try {
-            await rendition.display(initialLocation);
+            await rendition.display(restoreFromLocation);
           } catch {
-            if (sanitizedInitialLocation && sanitizedInitialLocation !== initialLocation) {
+            if (sanitizedRestoreLocation && sanitizedRestoreLocation !== restoreFromLocation) {
               try {
-                await rendition.display(sanitizedInitialLocation);
+                await rendition.display(sanitizedRestoreLocation);
               } catch {
                 await rendition.display();
               }
@@ -3155,6 +3388,17 @@ export function EpubReader({
           clearLoadTimeout();
           setLoadPhase("ready");
           performanceTracker.mark("FIRST_PAGE_VISIBLE");
+          lastLoadErrorCodeRef.current = null;
+
+          if (isRecoveryMount) {
+            logReaderRecoveryEvent("RECOVERY_SUCCEEDED", {
+              bookId,
+              recoveryId: recoveryIdRef.current,
+              durationMs: Math.round(performanceTracker.elapsed()),
+            });
+          }
+
+          isRecoveringRef.current = false;
         }
 
         // Fuera del camino critico: generar locations es lo mas caro en libros grandes y
