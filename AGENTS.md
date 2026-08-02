@@ -97,6 +97,35 @@ If a feature does not help the user get a word from a book into Anki faster, do 
 - Supabase Row Level Security must be assumed and respected.
 - User data must always be scoped by user ID.
 
+## Database and migrations
+
+The Supabase CLI in this repo is linked to the **production** project
+(`supabase/.temp/project-ref` → `pqrumjlqprxdjgbhxjnu`).
+
+**Never run `supabase db push` without an explicit `--db-url`.** A bare `db push`
+applies migrations to production. Applying anything to production is the user's task,
+never the agent's.
+
+Agents may apply migrations to the **development** project only, and only with the
+target stated explicitly:
+
+    npx supabase db push --db-url "$SUPABASE_DEV_DB_URL"
+
+Order when a phase includes a migration:
+
+1. Agent writes the migration and the code.
+2. Migration is applied to development and the test batteries are run there.
+3. The user applies the migration to production.
+4. Only then does the user push the commit and let it deploy.
+
+Deploying code before the migration reaches production is what broke persistent
+translations once already: the code expected a table that did not exist yet.
+
+Additive migrations (new table, nullable column, index) are safe in that order.
+A destructive migration (dropping or renaming a column, tightening a constraint)
+must be split across two deploys, and the agent must flag it instead of shipping a
+single-step migration.
+
 ## Code style
 
 - Use clear names.
