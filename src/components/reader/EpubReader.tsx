@@ -1111,6 +1111,9 @@ export function EpubReader({
   const targetLanguageRef = useRef(targetLanguage);
   const translationsByCfiRef = useRef(new Map<string, BookTranslation>());
   const savedVocabularyTranslationIdsRef = useRef(new Set<string>());
+  // Persistent translation currently shown in the panel. Lets a vocabulary answer decide
+  // whether it still owns the visible state.
+  const activeTranslationIdRef = useRef<string | null>(null);
   const appliedHighlightCfisRef = useRef(new Set<string>());
   const loadedChapterHrefsRef = useRef(new Set<string>());
   const loadingChapterHrefsRef = useRef(new Set<string>());
@@ -1344,6 +1347,12 @@ export function EpubReader({
   useEffect(() => {
     selectionCfiRangeRef.current = selectionCfiRange;
   }, [selectionCfiRange]);
+
+  useEffect(() => {
+    activeTranslationIdRef.current = isPersistedTranslationId(activeTranslation?.id)
+      ? activeTranslation.id
+      : null;
+  }, [activeTranslation]);
 
   useEffect(() => {
     if (selectedText) {
@@ -1648,9 +1657,26 @@ export function EpubReader({
     [applyTranslationHighlight, cacheTranslation],
   );
 
+  /**
+   * Optimistic vocabulary cache. It is written on the click, so reopening the same
+   * highlight reads as saved even if the panel closed before Supabase answered.
+   * The visible flag only moves when the id is still the one on screen: a late answer
+   * for another range must not repaint the current selection.
+   */
   const markTranslationSaved = useCallback((bookTranslationId: string) => {
     savedVocabularyTranslationIdsRef.current.add(bookTranslationId);
-    setIsActiveTranslationSaved(true);
+
+    if (activeTranslationIdRef.current === bookTranslationId) {
+      setIsActiveTranslationSaved(true);
+    }
+  }, []);
+
+  const markTranslationSaveFailed = useCallback((bookTranslationId: string) => {
+    savedVocabularyTranslationIdsRef.current.delete(bookTranslationId);
+
+    if (activeTranslationIdRef.current === bookTranslationId) {
+      setIsActiveTranslationSaved(false);
+    }
   }, []);
 
   const toggleReaderUi = useCallback(() => {
@@ -3633,6 +3659,7 @@ export function EpubReader({
               onTranslationReady={handleTranslationReady}
               onPersistTranslation={persistTranslation}
               onVocabularySaved={markTranslationSaved}
+              onVocabularySaveFailed={markTranslationSaveFailed}
             />
           </div>
         )}

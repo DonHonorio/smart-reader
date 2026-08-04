@@ -418,6 +418,29 @@ export type SaveVocabularyResponse = {
   message: string;
 };
 
+/**
+ * Machine readable reason for a failed save. It lets the panel tell a expired session
+ * apart from a plain write failure without parsing user facing copy.
+ * A translation that does not exist and one that belongs to somebody else share
+ * `TRANSLATION_NOT_FOUND` on purpose: the client must not learn the difference.
+ */
+export type SaveVocabularyErrorCode =
+  | "UNAUTHENTICATED"
+  | "INVALID_REQUEST"
+  | "BOOK_NOT_FOUND"
+  | "TRANSLATION_NOT_FOUND"
+  | "SAVE_FAILED";
+
+export type SaveVocabularyErrorResponse = {
+  error: string;
+  code: SaveVocabularyErrorCode;
+};
+
+/** Result of the optimistic save, as the panel consumes it. */
+export type SaveVocabularyResult =
+  | { ok: true; item: VocabularyItem; alreadyExisted: boolean }
+  | { ok: false; code: SaveVocabularyErrorCode; message: string };
+
 export type OnboardingStatus = "pending" | "completed" | "skipped";
 
 export type UserOnboarding = {

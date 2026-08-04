@@ -195,6 +195,34 @@ export async function createBookTranslation(
   };
 }
 
+/**
+ * A stored translation by id, scoped to its owner. Returns null both when the row
+ * does not exist and when it belongs to somebody else, so the caller cannot leak
+ * the difference to the client.
+ */
+export async function getTranslationById(
+  supabase: SupabaseServerClient,
+  userId: string,
+  bookTranslationId: string,
+): Promise<BookTranslationServiceResult<BookTranslation | null>> {
+  const { data, error } = await supabase
+    .from("book_translations")
+    .select(BOOK_TRANSLATION_FIELDS)
+    .eq("id", bookTranslationId)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) {
+    return failure(error);
+  }
+
+  if (!data) {
+    return { ok: true, data: null };
+  }
+
+  return { ok: true, data: mapBookTranslationRow(data as BookTranslationRow) };
+}
+
 /** The vocabulary item created from a stored translation, when it exists. */
 export async function getVocabularyItemByTranslation(
   supabase: SupabaseServerClient,

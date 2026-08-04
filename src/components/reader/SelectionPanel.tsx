@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import {
   confidenceScoreToLabel,
@@ -8,12 +8,16 @@ import {
   isPersistedTranslationId,
   logBookTranslationEvent,
 } from "@/lib/bookTranslations";
+import {
+  VOCABULARY_SAVE_MISSING_CONTEXT_ERROR,
+  logVocabularySaveEvent,
+  requestVocabularySave,
+} from "@/lib/vocabularySave";
 import { cn } from "@/lib/utils";
 import type {
   BookTranslation,
   CreateBookTranslationRequest,
   SaveVocabularyRequest,
-  SaveVocabularyResponse,
   SelectionPanelState,
 } from "@/types";
 
@@ -64,7 +68,22 @@ type SelectionPanelProps = {
   onPersistTranslation?: (
     input: CreateBookTranslationRequest,
   ) => Promise<BookTranslation | null>;
+  /** Called as soon as the user clicks Save, before the request resolves. */
   onVocabularySaved?: (bookTranslationId: string) => void;
+  /** Called when that optimistic save could not be persisted. */
+  onVocabularySaveFailed?: (bookTranslationId: string) => void;
+};
+
+/**
+ * One entry per selection. The panel instance is reused across selections, so the save
+ * state can never be a single flag: a slow answer for one range must not repaint another.
+ */
+type VocabularySaveEntry = {
+  /** `saving` is already an optimistic save: the button reads Saved from that moment. */
+  status: "saving" | "saved" | "error";
+  message: string | null;
+  alreadyExisted: boolean;
+  vocabularyItemId: string | null;
 };
 
 type NormalizedTranslation = {
@@ -151,9 +170,9 @@ export function SelectionPanel({
   onTranslationReady,
   onPersistTranslation,
   onVocabularySaved,
+  onVocabularySaveFailed,
 }: SelectionPanelProps) {
   const [isTranslating, setIsTranslating] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
   const [translationState, setTranslationState] = useState<{
     key: string;
     value: NormalizedTranslation;
@@ -162,15 +181,28 @@ export function SelectionPanel({
     key: string;
     message: string;
   } | null>(null);
-  const [saveState, setSaveState] = useState<{
-    key: string;
-    status: "created" | "already_exists" | "error";
-    message: string;
-  } | null>(null);
+  const [saveEntriesByKey, setSaveEntriesByKey] = useState<Record<string, VocabularySaveEntry>>({});
   const [persistedTranslationState, setPersistedTranslationState] = useState<{
     key: string;
     id: string;
   } | null>(null);
+
+  // In-flight saves by selection. A ref, not state: the button already reads as saved
+  // through the optimistic entry, so a second click needs no re-render to be ignored.
+  const pendingSaveKeysRef = useRef(new Set<string>());
+  const saveAttemptIdRef = useRef(0);
+  const latestSaveAttemptByKeyRef = useRef(new Map<string, number>());
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+
+    return () => {
+      // The request is not cancelled: it finishes and updates the reader cache.
+      // Only React state updates stop here.
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const selectionKey = useMemo(
     () =>
@@ -187,20 +219,14 @@ export function SelectionPanel({
   const translation = aiTranslation ?? storedNormalizedTranslation;
   const errorMessage = errorState?.key === selectionKey ? errorState.message : null;
   const hasSuccessfulTranslation = Boolean(translation) && !errorMessage;
-  const currentSaveState = saveState?.key === selectionKey ? saveState : null;
+  const currentSaveEntry = saveEntriesByKey[selectionKey] ?? null;
   const isSavedInThisPanel =
-    currentSaveState?.status === "created" || currentSaveState?.status === "already_exists";
+    currentSaveEntry?.status === "saving" || currentSaveEntry?.status === "saved";
   const isSaved = isVocabularyAlreadySaved || isSavedInThisPanel;
-  const saveErrorMessage = currentSaveState?.status === "error" ? currentSaveState.message : null;
-  const saveSuccessMessage = isSavedInThisPanel ? currentSaveState?.message ?? null : null;
-  const saveButtonLabel =
-    isVocabularyAlreadySaved || currentSaveState?.status === "already_exists"
-      ? "Already saved"
-      : currentSaveState?.status === "created"
-        ? "Saved"
-        : isSaving
-          ? "Saving..."
-          : "Save";
+  const saveErrorMessage = currentSaveEntry?.status === "error" ? currentSaveEntry.message : null;
+  const saveSuccessMessage = isSavedInThisPanel ? currentSaveEntry?.message ?? null : null;
+  // Optimistic: the button reads Saved from the click, not from the server answer.
+  const saveButtonLabel = isSaved ? "Saved" : "Save";
 
   const panelState: SelectionPanelState | null = !translation
     ? null
@@ -210,12 +236,34 @@ export function SelectionPanel({
         ? "new_translation"
         : "stored_translation";
 
+  // idle -> saving -> saved, or back to idle through error. Exposed for QA like
+  // `data-panel-state`; the visible design does not change.
+  const vocabularySaveState: "idle" | "saving" | "saved" | "error" =
+    currentSaveEntry?.status ?? (isVocabularyAlreadySaved ? "saved" : "idle");
+
   const linkedBookTranslationId =
     persistedTranslationState?.key === selectionKey
       ? persistedTranslationState.id
       : isPersistedTranslationId(storedTranslation?.id)
         ? storedTranslation.id
         : null;
+
+  function setSaveEntry(key: string, entry: VocabularySaveEntry) {
+    setSaveEntriesByKey((entries) => ({ ...entries, [key]: entry }));
+  }
+
+  function clearSaveEntry(key: string) {
+    setSaveEntriesByKey((entries) => {
+      if (!entries[key]) {
+        return entries;
+      }
+
+      const nextEntries = { ...entries };
+      delete nextEntries[key];
+
+      return nextEntries;
+    });
+  }
 
   function persistTranslationInBackground(value: NormalizedTranslation) {
     if (!cfiRange || !onPersistTranslation) {
@@ -323,7 +371,7 @@ export function SelectionPanel({
         key: selectionKey,
         value: normalizedTranslation,
       });
-      setSaveState(null);
+      clearSaveEntry(selectionKey);
       setPersistedTranslationState(null);
 
       if (cfiRange) {
@@ -340,85 +388,158 @@ export function SelectionPanel({
     }
   }
 
-  async function handleSave() {
-    if (!translation || isSaving || isSaved) {
+  /**
+   * Runs while the panel is open and survives it being closed. It never awaits before
+   * the optimistic update, so the button flips to Saved on the click itself.
+   */
+  async function runVocabularySave(params: {
+    key: string;
+    attemptId: number;
+    bookTranslationId: string | null;
+    body: SaveVocabularyRequest;
+  }) {
+    const { attemptId, body, bookTranslationId, key } = params;
+    const startedAt = Date.now();
+
+    logVocabularySaveEvent("REQUEST_STARTED", {
+      bookTranslationId,
+      attemptId,
+    });
+
+    const result = await requestVocabularySave(body);
+    const durationMs = Date.now() - startedAt;
+
+    pendingSaveKeysRef.current.delete(key);
+
+    // A late answer only owns the state if it is still the newest attempt for its own
+    // selection. Anything else belongs to a selection the user already left behind.
+    if (latestSaveAttemptByKeyRef.current.get(key) !== attemptId) {
+      logVocabularySaveEvent("STALE_RESPONSE_IGNORED", {
+        bookTranslationId,
+        attemptId,
+        durationMs,
+      });
+      return;
+    }
+
+    if (result.ok) {
+      logVocabularySaveEvent(result.alreadyExisted ? "ALREADY_EXISTS" : "SAVED", {
+        bookTranslationId,
+        attemptId,
+        durationMs,
+      });
+
+      // Confirms the optimistic entry the reader already holds; adding it twice is a no-op.
+      if (bookTranslationId) {
+        onVocabularySaved?.(bookTranslationId);
+      }
+
+      if (!isMountedRef.current) {
+        return;
+      }
+
+      setSaveEntry(key, {
+        status: "saved",
+        message: result.alreadyExisted ? "Already saved" : "Saved",
+        alreadyExisted: result.alreadyExisted,
+        vocabularyItemId: result.item.id || null,
+      });
+
+      return;
+    }
+
+    logVocabularySaveEvent("FAILED", {
+      bookTranslationId,
+      attemptId,
+      durationMs,
+      code: result.code,
+    });
+    logVocabularySaveEvent("ROLLBACK", { bookTranslationId, attemptId });
+
+    // The translation and its highlight stay untouched: only the vocabulary link is undone.
+    if (bookTranslationId) {
+      onVocabularySaveFailed?.(bookTranslationId);
+    }
+
+    if (!isMountedRef.current) {
+      return;
+    }
+
+    setSaveEntry(key, {
+      status: "error",
+      message: result.message,
+      alreadyExisted: false,
+      vocabularyItemId: null,
+    });
+  }
+
+  function handleSave() {
+    if (!translation || isSaved) {
+      return;
+    }
+
+    if (pendingSaveKeysRef.current.has(selectionKey)) {
+      logVocabularySaveEvent("DUPLICATE_CLICK_IGNORED", {
+        bookTranslationId: linkedBookTranslationId,
+      });
       return;
     }
 
     const normalizedContextSentence = getNormalizedString(contextSentence);
 
     if (!normalizedContextSentence) {
-      setSaveState({
-        key: selectionKey,
+      setSaveEntry(selectionKey, {
         status: "error",
-        message: "Context is required before saving.",
+        message: VOCABULARY_SAVE_MISSING_CONTEXT_ERROR,
+        alreadyExisted: false,
+        vocabularyItemId: null,
       });
       return;
     }
 
-    setIsSaving(true);
-    setSaveState(null);
+    const attemptId = saveAttemptIdRef.current + 1;
+    saveAttemptIdRef.current = attemptId;
+    pendingSaveKeysRef.current.add(selectionKey);
+    latestSaveAttemptByKeyRef.current.set(selectionKey, attemptId);
 
-    try {
-      const body: SaveVocabularyRequest = {
-        bookId,
-        selectedText: translation.selectedText,
-        term: translation.surfaceUnit,
-        canonicalUnit: translation.canonicalUnit,
-        translation: translation.translation,
-        contextSentence: normalizedContextSentence,
-        unitType: translation.unitType,
-        confidence: translation.confidence,
-        bookTranslationId: linkedBookTranslationId,
-      };
+    const body: SaveVocabularyRequest = {
+      bookId,
+      selectedText: translation.selectedText,
+      term: translation.surfaceUnit,
+      canonicalUnit: translation.canonicalUnit,
+      translation: translation.translation,
+      contextSentence: normalizedContextSentence,
+      unitType: translation.unitType,
+      confidence: translation.confidence,
+      bookTranslationId: linkedBookTranslationId,
+    };
 
-      const response = await fetch("/api/vocabulary", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
-      });
+    // 1. The interface commits first.
+    setSaveEntry(selectionKey, {
+      status: "saving",
+      message: "Saved",
+      alreadyExisted: false,
+      vocabularyItemId: null,
+    });
 
-      const data = (await response.json()) as Partial<SaveVocabularyResponse> & {
-        error?: string;
-      };
-
-      if (!response.ok) {
-        throw new Error(data.error || "Save request failed.");
-      }
-
-      if (typeof data.item !== "object" || data.item === null) {
-        throw new Error("Save request failed.");
-      }
-
-      if (data.status !== "created" && data.status !== "already_exists") {
-        throw new Error("Save request failed.");
-      }
-
-      const message = data.status === "already_exists" ? "Already saved" : "Saved";
-
-      setSaveState({
-        key: selectionKey,
-        status: data.status,
-        message,
-      });
-
-      if (linkedBookTranslationId) {
-        onVocabularySaved?.(linkedBookTranslationId);
-      }
-    } catch (error) {
-      const message =
-        error instanceof Error && error.message ? error.message : "Could not save right now.";
-
-      setSaveState({
-        key: selectionKey,
-        status: "error",
-        message,
-      });
-    } finally {
-      setIsSaving(false);
+    // Reopening this highlight must already read as saved, even if the panel closes
+    // before the request lands.
+    if (linkedBookTranslationId) {
+      onVocabularySaved?.(linkedBookTranslationId);
     }
+
+    logVocabularySaveEvent("OPTIMISTIC_UPDATE", {
+      bookTranslationId: linkedBookTranslationId,
+      attemptId,
+    });
+
+    // 2. Supabase catches up afterwards, without blocking panel, reader or swipe.
+    void runVocabularySave({
+      key: selectionKey,
+      attemptId,
+      bookTranslationId: linkedBookTranslationId,
+      body,
+    });
   }
 
   const isMobileVariant = variant === "mobile";
@@ -427,6 +548,8 @@ export function SelectionPanel({
     <section
       // Exposed for debugging/manual QA only; the panel design is unchanged.
       data-panel-state={panelState ?? "empty"}
+      data-vocabulary-save-state={vocabularySaveState}
+      data-vocabulary-item-id={currentSaveEntry?.vocabularyItemId ?? undefined}
       className={cn(
         "w-full overflow-auto border shadow-xl",
         isMobileVariant
@@ -536,7 +659,7 @@ export function SelectionPanel({
             isMobileVariant && "h-8 rounded-md px-2.5 text-xs",
           )}
           onClick={handleTranslate}
-          disabled={!selectedText || isTranslating || isSaving || hasSuccessfulTranslation}
+          disabled={!selectedText || isTranslating || hasSuccessfulTranslation}
         >
           {isTranslating ? "Translating..." : hasSuccessfulTranslation ? "Translated" : "Translate"}
         </Button>
@@ -548,7 +671,7 @@ export function SelectionPanel({
             isMobileVariant && "h-8 rounded-md px-2.5 text-xs",
           )}
           onClick={handleSave}
-          disabled={!translation || isSaving || isSaved}
+          disabled={!translation || isSaved}
         >
           {saveButtonLabel}
         </Button>

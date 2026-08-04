@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
+import { confidenceScoreToLabel } from "@/lib/bookTranslations";
+import { getTranslationById } from "@/lib/bookTranslationsService";
 import { createClient } from "@/lib/supabase/server";
 import type {
+  BookTranslation,
+  SaveVocabularyErrorCode,
+  SaveVocabularyErrorResponse,
   SaveVocabularyRequest,
   SaveVocabularyResponse,
   VocabularyItem,
@@ -42,7 +47,12 @@ function normalizeText(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function jsonError(message: string, status: number, debugContext?: Record<string, unknown>) {
+function jsonError(
+  message: string,
+  status: number,
+  code: SaveVocabularyErrorCode = "SAVE_FAILED",
+  debugContext?: Record<string, unknown>,
+) {
   if (status === 400) {
     console.warn("/api/vocabulary bad request:", {
       message,
@@ -50,21 +60,24 @@ function jsonError(message: string, status: number, debugContext?: Record<string
     });
   }
 
-  return NextResponse.json({ error: message }, { status });
+  const payload: SaveVocabularyErrorResponse = { error: message, code };
+
+  return NextResponse.json(payload, { status });
 }
 
 function mapSupabaseError(
   error: SupabaseErrorLike | null | undefined,
   fallbackMessage: string,
-): { status: number; message: string } {
+): { status: number; message: string; code: SaveVocabularyErrorCode } {
   if (!error?.code) {
-    return { status: 500, message: fallbackMessage };
+    return { status: 500, message: fallbackMessage, code: "SAVE_FAILED" };
   }
 
   if (error.code === "42501") {
     return {
       status: 403,
       message: "Not allowed to save vocabulary for this user.",
+      code: "SAVE_FAILED",
     };
   }
 
@@ -72,6 +85,7 @@ function mapSupabaseError(
     return {
       status: 404,
       message: "Book not found.",
+      code: "BOOK_NOT_FOUND",
     };
   }
 
@@ -79,6 +93,7 @@ function mapSupabaseError(
     return {
       status: 409,
       message: "This vocabulary item is already saved.",
+      code: "SAVE_FAILED",
     };
   }
 
@@ -86,6 +101,7 @@ function mapSupabaseError(
     return {
       status: 500,
       message: "The vocabulary_items table is not available.",
+      code: "SAVE_FAILED",
     };
   }
 
@@ -93,10 +109,11 @@ function mapSupabaseError(
     return {
       status: 500,
       message: "The vocabulary_items table schema is missing expected columns.",
+      code: "SAVE_FAILED",
     };
   }
 
-  return { status: 500, message: fallbackMessage };
+  return { status: 500, message: fallbackMessage, code: "SAVE_FAILED" };
 }
 
 function buildFallbackVocabularyItem(
@@ -129,7 +146,7 @@ function validateRequiredString(
   if (typeof value !== "string") {
     return {
       ok: false,
-      response: jsonError(`${fieldName} is required.`, 400, {
+      response: jsonError(`${fieldName} is required.`, 400, "INVALID_REQUEST", {
         reason: "invalid_type",
         fieldName,
         receivedType: typeof value,
@@ -142,7 +159,7 @@ function validateRequiredString(
   if (!normalized) {
     return {
       ok: false,
-      response: jsonError(`${fieldName} is required.`, 400, {
+      response: jsonError(`${fieldName} is required.`, 400, "INVALID_REQUEST", {
         reason: "required_empty",
         fieldName,
       }),
@@ -152,7 +169,7 @@ function validateRequiredString(
   if (normalized.length > maxLength) {
     return {
       ok: false,
-      response: jsonError(`${fieldName} is too long.`, 400, {
+      response: jsonError(`${fieldName} is too long.`, 400, "INVALID_REQUEST", {
         reason: "max_length_exceeded",
         fieldName,
         maxLength,
@@ -164,6 +181,45 @@ function validateRequiredString(
   return { ok: true, value: normalized };
 }
 
+/**
+ * Fields the row is written with. When the save comes from a persistent translation,
+ * they are read back from `book_translations` instead of trusted from the client, so a
+ * manipulated payload cannot store something different from what the reader shows.
+ */
+type ResolvedVocabularyFields = {
+  bookId: string;
+  selectedText: string;
+  term: string;
+  canonicalUnit: string;
+  translation: string;
+  contextSentence: string;
+  unitType: string;
+  confidence: string;
+};
+
+function resolveFieldsFromTranslation(
+  translation: BookTranslation,
+  clientFields: ResolvedVocabularyFields,
+): ResolvedVocabularyFields {
+  const selectedText = normalizeText(translation.selectedText) || clientFields.selectedText;
+  const term = normalizeText(translation.detectedExpression ?? "") || selectedText;
+  const canonicalUnit = normalizeText(translation.baseForm ?? "") || term;
+  const contextSentence =
+    normalizeText(translation.contextSentence ?? "") || clientFields.contextSentence;
+
+  return {
+    bookId: translation.bookId,
+    selectedText,
+    term,
+    canonicalUnit,
+    translation: normalizeText(translation.translation) || clientFields.translation,
+    contextSentence,
+    unitType: normalizeText(translation.unitType ?? "") || clientFields.unitType,
+    // book_translations stores a numeric score; vocabulary_items keeps the label.
+    confidence: confidenceScoreToLabel(translation.confidence),
+  };
+}
+
 export async function GET(request: Request) {
   try {
     const supabase = await createClient();
@@ -173,7 +229,7 @@ export async function GET(request: Request) {
     } = await supabase.auth.getUser();
 
     if (authError || !user) {
-      return jsonError("Authentication required.", 401);
+      return jsonError("Authentication required.", 401, "UNAUTHENTICATED");
     }
 
     const { searchParams } = new URL(request.url);
@@ -190,7 +246,7 @@ export async function GET(request: Request) {
 
     if (error) {
       const mappedError = mapSupabaseError(error, "Could not load vocabulary.");
-      return jsonError(mappedError.message, mappedError.status);
+      return jsonError(mappedError.message, mappedError.status, mappedError.code);
     }
 
     return NextResponse.json({ items: (data ?? []) as VocabularyItem[] });
@@ -206,7 +262,7 @@ export async function POST(request: Request) {
   try {
     body = await request.json();
   } catch {
-    return jsonError("Invalid request body.", 400, {
+    return jsonError("Invalid request body.", 400, "INVALID_REQUEST", {
       reason: "invalid_json",
     });
   }
@@ -282,11 +338,11 @@ export async function POST(request: Request) {
 
     if (authError) {
       console.error("/api/vocabulary auth error:", authError.message);
-      return jsonError("Authentication required.", 401);
+      return jsonError("Authentication required.", 401, "UNAUTHENTICATED");
     }
 
     if (!user) {
-      return jsonError("Authentication required.", 401);
+      return jsonError("Authentication required.", 401, "UNAUTHENTICATED");
     }
 
     let effectiveBookId = validatedBookId.value;
@@ -304,7 +360,7 @@ export async function POST(request: Request) {
       if (onboardingBookError) {
         console.error("/api/vocabulary onboarding book query error:", onboardingBookError.message);
         const mappedError = mapSupabaseError(onboardingBookError, "Could not verify onboarding book.");
-        return jsonError(mappedError.message, mappedError.status);
+        return jsonError(mappedError.message, mappedError.status, mappedError.code);
       }
 
       if (onboardingBook?.id) {
@@ -328,7 +384,7 @@ export async function POST(request: Request) {
         if (createBookError || !createdBook?.id) {
           console.error("/api/vocabulary onboarding book create error:", createBookError?.message);
           const mappedError = mapSupabaseError(createBookError, "Could not create onboarding book.");
-          return jsonError(mappedError.message, mappedError.status);
+          return jsonError(mappedError.message, mappedError.status, mappedError.code);
         }
 
         effectiveBookId = createdBook.id;
@@ -344,12 +400,53 @@ export async function POST(request: Request) {
       if (bookError) {
         console.error("/api/vocabulary book query error:", bookError.message);
         const mappedError = mapSupabaseError(bookError, "Could not verify book access.");
-        return jsonError(mappedError.message, mappedError.status);
+        return jsonError(mappedError.message, mappedError.status, mappedError.code);
       }
 
       if (!book) {
-        return jsonError("Book not found.", 404);
+        return jsonError("Book not found.", 404, "BOOK_NOT_FOUND");
       }
+    }
+
+    let resolvedFields: ResolvedVocabularyFields = {
+      bookId: effectiveBookId,
+      selectedText: validatedSelectedText.value,
+      term: validatedTerm.value,
+      canonicalUnit: validatedCanonicalUnit.value,
+      translation: validatedTranslation.value,
+      contextSentence: validatedContextSentence.value,
+      unitType: validatedUnitType.value,
+      confidence: validatedConfidence.value,
+    };
+
+    // The saved item must mirror the persisted translation, not what the client sent.
+    // Fase 35 already stored every field the vocabulary row needs.
+    if (normalizedBookTranslationId) {
+      const translationResult = await getTranslationById(
+        supabase,
+        user.id,
+        normalizedBookTranslationId,
+      );
+
+      if (!translationResult.ok) {
+        console.error(
+          "/api/vocabulary translation lookup error:",
+          translationResult.error.message,
+        );
+        const mappedError = mapSupabaseError(
+          translationResult.error,
+          "Could not verify the stored translation.",
+        );
+        return jsonError(mappedError.message, mappedError.status, mappedError.code);
+      }
+
+      if (!translationResult.data) {
+        // Same answer for "does not exist" and "belongs to another user".
+        return jsonError("Translation not found.", 404, "TRANSLATION_NOT_FOUND");
+      }
+
+      resolvedFields = resolveFieldsFromTranslation(translationResult.data, resolvedFields);
+      effectiveBookId = resolvedFields.bookId;
     }
 
     // A persistent translation can only produce one vocabulary item.
@@ -373,7 +470,7 @@ export async function POST(request: Request) {
           existingLinkedItemError,
           "Could not verify existing vocabulary item.",
         );
-        return jsonError(mappedError.message, mappedError.status);
+        return jsonError(mappedError.message, mappedError.status, mappedError.code);
       }
 
       if (existingLinkedItem) {
@@ -387,16 +484,22 @@ export async function POST(request: Request) {
       }
     }
 
-    const { data: existingItem, error: existingItemError } = await supabase
-      .from("vocabulary_items")
-      .select("*")
-      .eq("user_id", user.id)
-      .eq("book_id", effectiveBookId)
-      .eq("term", validatedTerm.value)
-      .eq("context_sentence", validatedContextSentence.value)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // Fallback duplicate check for saves with no persistent translation (onboarding demo,
+    // legacy rows). With a link it must not run: a book repeating the same sentence would
+    // answer with an item bound to another position, and that highlight would read as
+    // saved until the next reload. `book_translation_id` is the authority when present.
+    const { data: existingItem, error: existingItemError } = normalizedBookTranslationId
+      ? { data: null, error: null }
+      : await supabase
+          .from("vocabulary_items")
+          .select("*")
+          .eq("user_id", user.id)
+          .eq("book_id", effectiveBookId)
+          .eq("term", resolvedFields.term)
+          .eq("context_sentence", resolvedFields.contextSentence)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
 
     if (existingItemError) {
       console.error("/api/vocabulary duplicate check error:", existingItemError.message);
@@ -404,7 +507,7 @@ export async function POST(request: Request) {
         existingItemError,
         "Could not verify existing vocabulary item.",
       );
-      return jsonError(mappedError.message, mappedError.status);
+      return jsonError(mappedError.message, mappedError.status, mappedError.code);
     }
 
     if (existingItem) {
@@ -422,13 +525,13 @@ export async function POST(request: Request) {
     const insertPayload: InsertVocabularyPayload = {
       user_id: user.id,
       book_id: effectiveBookId,
-      selected_text: validatedSelectedText.value,
-      term: validatedTerm.value,
-      canonical_unit: validatedCanonicalUnit.value,
-      translation: validatedTranslation.value,
-      context_sentence: validatedContextSentence.value,
-      unit_type: validatedUnitType.value,
-      confidence: validatedConfidence.value,
+      selected_text: resolvedFields.selectedText,
+      term: resolvedFields.term,
+      canonical_unit: resolvedFields.canonicalUnit,
+      translation: resolvedFields.translation,
+      context_sentence: resolvedFields.contextSentence,
+      unit_type: resolvedFields.unitType,
+      confidence: resolvedFields.confidence,
       status: "saved",
       ...(normalizedBookTranslationId ? { book_translation_id: normalizedBookTranslationId } : {}),
     };
@@ -441,13 +544,19 @@ export async function POST(request: Request) {
       insertError = insertResult.error;
     }
 
-    // A concurrent save already linked this translation: reuse it instead of failing.
-    if (insertError?.code === "23505" && normalizedBookTranslationId) {
-      const { data: concurrentItem } = await supabase
+    // A concurrent save won the race: reuse its row instead of failing.
+    if (insertError?.code === "23505") {
+      const concurrentQuery = supabase
         .from("vocabulary_items")
         .select("*")
-        .eq("user_id", user.id)
-        .eq("book_translation_id", normalizedBookTranslationId)
+        .eq("user_id", user.id);
+
+      const { data: concurrentItem } = await (normalizedBookTranslationId
+        ? concurrentQuery.eq("book_translation_id", normalizedBookTranslationId)
+        : concurrentQuery
+            .eq("book_id", effectiveBookId)
+            .eq("term", resolvedFields.term)
+            .eq("context_sentence", resolvedFields.contextSentence))
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -493,16 +602,18 @@ export async function POST(request: Request) {
     if (insertError) {
       console.error("/api/vocabulary insert error:", insertError.message);
       const mappedError = mapSupabaseError(insertError, "Could not save vocabulary item right now.");
-      return jsonError(mappedError.message, mappedError.status);
+      return jsonError(mappedError.message, mappedError.status, mappedError.code);
     }
 
-    const { data: insertedItem, error: readBackError } = await supabase
-      .from("vocabulary_items")
-      .select("*")
-      .eq("user_id", user.id)
-      .eq("book_id", effectiveBookId)
-      .eq("term", validatedTerm.value)
-      .eq("translation", validatedTranslation.value)
+    // The link identifies the new row exactly; without it fall back to term + translation.
+    const readBackQuery = supabase.from("vocabulary_items").select("*").eq("user_id", user.id);
+
+    const { data: insertedItem, error: readBackError } = await (normalizedBookTranslationId
+      ? readBackQuery.eq("book_translation_id", normalizedBookTranslationId)
+      : readBackQuery
+          .eq("book_id", effectiveBookId)
+          .eq("term", resolvedFields.term)
+          .eq("translation", resolvedFields.translation))
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
